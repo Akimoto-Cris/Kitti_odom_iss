@@ -43,11 +43,11 @@ class KittiStandard(dDataset):
         source_pose = self.dataset.poses[idx + 1]
 
         pose = np.dot(np.linalg.inv(target_pose), source_pose)
-        rotation = list(Rotation.from_dcm(pose[:3, :3]).as_euler("xyz", degrees=False))
-        translation = list(pose[:, -1])
-        pose_vect = translation[:-1] + rotation
+        rotation = Rotation.from_dcm(pose[:3, :3]).as_euler("xyz", degrees=False)
+        translation = pose[:, -1]
+        pose_vect = np.hstack([translation[:-1], rotation])
 
-        return target_cloud, source_cloud, np.array(pose_vect)
+        return target_cloud, source_cloud, pose_vect
 
 
 class DataLoaderX(gDataLoader):
@@ -171,7 +171,7 @@ class PadCollate:
         xs_t = torch.stack(list(map(lambda x: x[1], batch)), dim=0)
         length1s = torch.LongTensor(list(map(lambda x: x[2], batch)))
         length2s = torch.LongTensor(list(map(lambda x: x[3], batch)))
-        ys = torch.LongTensor(list(map(lambda x: x[4], batch)))
+        ys = torch.FloatTensor(list(map(lambda x: x[4], batch)))
         return xs_s, xs_t, length1s, length2s, ys
 
     def __call__(self, batch):

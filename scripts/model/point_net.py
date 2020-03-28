@@ -11,8 +11,7 @@
 """
 
 import torch
-import torch.nn.functional as F
-from torch.nn import Sequential as Seq, Linear as Lin, ReLU, Sigmoid, BatchNorm1d as BN, Dropout
+from torch.nn import Sequential as Seq, Linear as Lin, ReLU, Sigmoid, BatchNorm1d as BN, Dropout, LeakyReLU
 from torch_geometric.nn import PointConv, fps, radius, global_max_pool
 from torch_geometric.data import Batch
 
@@ -65,7 +64,7 @@ class PointNetXX(torch.nn.Module):
         self.lin2 = Lin(256, 64)
 
         self.act = eval(act)()
-        self.dropout = Dropout(dropout) if 0 < dropout < 1 else lambda x: x
+        self.dropout = Dropout(dropout)
 
     def forward(self, x, pos, batch):
         sa0_out = x, pos, batch
@@ -74,8 +73,8 @@ class PointNetXX(torch.nn.Module):
         sa3_out = self.sa3_module(*sa2_out)
         x, _, _ = sa3_out
 
-        x = self.act(self.lin1(x))
-        x = self.dropout(x)
+        x = self.lin1(x)
+        x = self.dropout(self.act(x))
         x = self.act(self.lin2(x))
         return x
 
@@ -91,9 +90,9 @@ class Net(torch.nn.Module):
             eval(act)(), Lin(64, dof)
         )
 
-        for m in self.modules():
-            if isinstance(m, Lin):
-                torch.nn.init.orthogonal(m.weight)
+        #for m in self.modules():
+        #    if isinstance(m, Lin):
+        #        torch.nn.init.kaiming_normal_(m.weight)
 
     def forward(self, input):
         if self.graph_input:
@@ -103,6 +102,7 @@ class Net(torch.nn.Module):
             graph_s, graph_t = x_pos_batch_to_pair_biggraph_pair(*input[:4])
             graph_s = self.transform(graph_s) if self.transform else graph_s
             graph_t = self.transform(graph_t) if self.transform else graph_t
+
             s_encode = self.pointnet(graph_s.x, graph_s.pos, graph_s.batch)
             t_encode = self.pointnet(graph_t.x, graph_t.pos, graph_t.batch)
 
@@ -125,5 +125,4 @@ def x_pos_batch_to_pair_biggraph_pair(cloud_s_all, cloud_t_all, lss, lst):
 
     graph_s = Batch(x=x_pos_s_all[:, 2:3], pos=x_pos_s_all[:, :3], batch=batch_s)
     graph_t = Batch(x=x_pos_t_all[:, 2:3], pos=x_pos_t_all[:, :3], batch=batch_t)
-
     return graph_s, graph_t
