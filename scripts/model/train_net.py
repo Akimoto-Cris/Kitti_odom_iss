@@ -10,19 +10,16 @@
 -----------------
 """
 
-import os
 import os.path as osp
 import random
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader as dDataLoader
-from prefetch_generator import BackgroundGenerator
-from dataloader import KittiGraph, DataLoaderX as gDataLoaderX, PadCollate, KittiStandard
+from dataloader import KittiGraph, KittiStandard
 from point_net import Net
-from utils import save_pose_predictions, AverageMeter
+from utils import save_pose_predictions, AverageMeter, dDataLoaderX, gDataLoaderX, PadCollate, l2reg
 import tqdm
 import re
-from torch_geometric.data import DataLoader as gDataLoader, Data as gData
+from collections import OrderedDict
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale, Compose
 import argparse
@@ -33,68 +30,99 @@ parser.add_argument("--n_fold", default=5, type=int)
 parser.add_argument("-b", "--batch_size", default=1, type=int)
 parser.add_argument("-e", "--epoch", default=30, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
-parser.add_argument("--grid_size", help="gridsampling size", type=float, default=1.)
+parser.add_argument("-wd", "--weight_decay", default=5e-5, type=float)
+parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, default=1.)
+parser.add_argument("--dropout", type=float, default=0.5)
 parser.add_argument("-s", "--seed", default=0, type=int)
 parser.add_argument("-g", "--gpu_first", default=True, type=bool)
 parser.add_argument("--model_pth", type=str)
+parser.add_argument("--weights_dir", type=str, default="weights")
 parser.add_argument("--num_workers", default=1, type=int)
+parser.add_argument("-ld", "--lr_decay", default=10, type=int)
 parser.add_argument("--log", default="log", type=str)
+parser.add_argument("--dof", default=7, type=int)
+parser.add_argument("--save_strategy", default="trainloss", type=str)
+parser.add_argument("--reg_lambda", default=10e-4, type=float)
 args = parser.parse_args()
-
 args_dict = vars(args)
 print('Argument list to program')
-print('\n'.join(['--{0} {1}'.format(arg, args_dict[arg])
-                 for arg in args_dict]))
+print('\n'.join(['--{0} {1}'.format(arg, args_dict[arg]) for arg in args_dict]))
 print('=' * 30)
 
 N_FOLD = args.n_fold
 BATCH_SIZE = args.batch_size
 EPOCH = args.epoch
 LR = args.lr
+LR_DECAY = args.lr_decay
 GRID_SAMPLE_SIZE = [args.grid_size] * 3
 LOAD_GRAPH = False
+DOF = args.dof
+WEIGHT_DECAY = args.weight_decay
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
-
-class dDataLoaderX(dDataLoader):
-    def __iter__(self):
-        return BackgroundGenerator(super().__iter__())
-
-
 Kitti = KittiGraph if LOAD_GRAPH else KittiStandard
+L2_LAMBDA = args.reg_lambda
+
 transform = Compose([#RandomTranslate(0.001),
                      GridSampling(GRID_SAMPLE_SIZE),
                      NormalizeScale()])
 #transform = GridSampling(GRID_SAMPLE_SIZE)
 
 
-def train(model, epoch, train_loader, optimizer, criterion):
+def adjust_lr(optimizer, epoch):
+    lr = LR * (0.1 ** (epoch / LR_DECAY))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
+def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
     model.train()
     temp_loss = AverageMeter()
+    temp_mse_loss = AverageMeter()
+    temp_x_loss = AverageMeter()
+    temp_rot_loss = AverageMeter()
 
     with tqdm.tqdm(len(train_loader)) as pbar:
         for data in train_loader:
+            data = data.to(device) if not isinstance(data, tuple) else tuple([d.to(device) for d in data])
+            optimizer.zero_grad()
+            # loss = F.nll_loss(model(data), data.y)
+            gt_poses = data.y.reshape(train_loader.batch_size, -1).float() if LOAD_GRAPH else data[-1].float()
+            pred_pose = model(data)
+            if len(gt_poses) == 2:
+                print(data[0].shape)
+                print(pred_pose.shape)
+            x_loss = criterion_x(pred_pose[:, :3], gt_poses[:, :3])
             try:
-                data = data.to(device) if not isinstance(data, tuple) else tuple([d.to(device) for d in data])
-                optimizer.zero_grad()
-                # loss = F.nll_loss(model(data), data.y)
-                gt_poses = data.y.reshape(train_loader.batch_size, -1).float() if LOAD_GRAPH else data[-1].float()
-                pred_pose = model(data)
-                loss = criterion(pred_pose, gt_poses)
+                rot_loss = criterion_rot(pred_pose[:, 3:] / torch.norm(pred_pose[:, 3:], dim=1), gt_poses[:, 3:])
+
+                mse_loss = torch.exp(-model.sx) * x_loss + torch.exp(-model.sq) * rot_loss
+                loss = L2_LAMBDA * l2reg(model) + mse_loss + model.sx + model.sq
                 loss.backward()
                 optimizer.step()
                 temp_loss.update(loss.item())
-                pbar.set_postfix(loss=loss.item())
+                temp_mse_loss.update(mse_loss.item())
+                temp_rot_loss.update(rot_loss.item())
+                temp_x_loss.update(x_loss.item())
+                pbar.set_postfix(OrderedDict(loss=loss.item(),
+                                             mse_loss=mse_loss.item(),
+                                             rot_loss=rot_loss.item(),
+                                             x_loss=x_loss.item(),
+                                             sx=float(model.sx.detach().cpu()),
+                                             sq=float(model.sq.detach().cpu())))
             except RuntimeError as e:
-                print(e)
+                print(gt_poses.shape, e)
             pbar.update(1)
-    return temp_loss.avg
+    return temp_loss.avg, temp_mse_loss.avg, temp_x_loss.avg, temp_rot_loss.avg
 
 
 @torch.no_grad()
-def val(model, loader, criterion):
+def val(model, loader, criterion_x, criterion_rot):
     model.eval()
     temp_loss = AverageMeter()
+    temp_x_loss = AverageMeter()
+    temp_rot_loss = AverageMeter()
+
     pred_poses = []
     with tqdm.tqdm(len(loader)) as pbar:
         for data in loader:
@@ -102,12 +130,20 @@ def val(model, loader, criterion):
             # loss = F.nll_loss(model(data), data.y)
             gt_poses = data.y.reshape(loader.batch_size, -1).float() if LOAD_GRAPH else data[-1].float()
             pred_pose = model(data)
-            loss = criterion(pred_pose, gt_poses)
+            x_loss = criterion_x(pred_pose[:, :3], gt_poses[:, :3])
+            rot_loss = criterion_rot(pred_pose[:, 3:] / torch.norm(pred_pose[:, 3:], dim=1), gt_poses[:, 3:])
+            loss = torch.exp(-model.sx) * x_loss + torch.exp(-model.sq) * rot_loss
             temp_loss.update(loss.item())
-            pbar.set_postfix(loss=loss.item())
+            temp_rot_loss.update(rot_loss.item())
+            temp_x_loss.update(x_loss.item())
             pbar.update(1)
             pred_poses += [pred_pose.cpu().numpy()]
-    return temp_loss.avg, pred_poses
+            pbar.set_postfix(OrderedDict(mse_loss=loss.item(),
+                                         rot_loss=rot_loss.item(),
+                                         x_loss=x_loss.item(),
+                                         sx=float(model.sx.detach().cpu()),
+                                         sq=float(model.sq.detach().cpu())))
+    return temp_loss.avg, pred_poses, temp_x_loss.avg, temp_rot_loss.avg
 
 
 if __name__ == '__main__':
@@ -136,45 +172,71 @@ if __name__ == '__main__':
 
         device = torch.device('cuda:0' if torch.cuda.is_available() and args.gpu_first else 'cpu')
 
-        model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=0).to(device)
+        model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=args.dropout, dof=DOF).to(device)
+
         start_epoch = 0
-        if args.model_pth is not None:
-            model.load_state_dict(torch.load(args.model_pth))
+        if osp.exists(args.model_pth):
+            saved_state_dict = torch.load(args.model_pth)
+            saved_state_dict["sx"] = torch.nn.Parameter(torch.tensor(-10.0))
+            model.load_state_dict(saved_state_dict)
             print("loaded weights from", args.model_pth)
             start_epoch = int(re.findall(r"epoch=(\d+?)_", args.model_pth)[0])
             print("start from epoch", start_epoch)
-            eval(re.findall(r"fold_([a-zA-Z0-9]+?)=", args.model_pth)[0] + "_hist").append(float(re.findall(r"fold_[a-zA-Z0-9]+?=([0-9]{1,}[.][0-9]*)", args.model_pth)[0]))
-        optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=0.0005)
-        criterion = nn.MSELoss().to(device)
+            eval(re.findall(r"fold_([a-zA-Z0-9]+?)=", args.model_pth)[0] + "_hist").append(float(re.findall(r"fold_[a-zA-Z0-9]+?=([-+]?[0-9]{1,}[.][0-9]*)", args.model_pth)[0]))
+        optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+        criterion_x = nn.MSELoss().to(device)
+        criterion_rot = nn.MSELoss().to(device)
 
         for epoch in range(start_epoch, EPOCH):
             tem_train_loss = AverageMeter()
+            tem_train_mse_loss = AverageMeter()
+            tem_train_x_loss = AverageMeter()
+            tem_train_rot_loss = AverageMeter()
+            tem_val_rot_loss = AverageMeter()
+            tem_val_x_loss = AverageMeter()
             tem_val_loss = AverageMeter()
+
             # train on all training sequences
             for seq in train_seqences:
                 trainset = Kitti(seq, root=args.data_dir)
                 trainloader = gDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
                     dDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=PadCollate(dim=0))
 
-                epoch_loss = train(model, epoch, trainloader, optimizer, criterion)
+                epoch_loss, mse_epoch_loss, x_epoch_loss, rot_epoch_loss = train(model, epoch, trainloader, optimizer,
+                                                                                 criterion_x, criterion_rot)
                 tem_train_loss.update(epoch_loss)
-                print(f"Epoch: {epoch:03d}\t\tSeq: {seq}\t\tTrain: {epoch_loss:.4f}")
+                tem_train_mse_loss.update(mse_epoch_loss)
+                tem_train_x_loss.update(x_epoch_loss)
+                tem_train_rot_loss.update(rot_epoch_loss)
+                print(f"Epoch: {epoch:03d}\tSeq: {seq}\tTTL: {epoch_loss:.3e}\tMSE: {mse_epoch_loss:.3e}\t"
+                      f"X: {x_epoch_loss:.3e}\tRot: {rot_epoch_loss:.3e}\tsx: "
+                      f"{float(model.sx.detach().cpu().numpy()):.3e}\tsq: {float(model.sq.detach().cpu().numpy()):.3e}")
+                torch.cuda.empty_cache()
             trainloss_hist.append(tem_train_loss.avg)
-            writer.add_scalar(f"train_loss", tem_train_loss.avg, global_step=epoch)
+            writer.add_scalar(f"train/loss", tem_train_loss.avg, global_step=epoch)
+            writer.add_scalar(f"train/mse_loss", tem_train_mse_loss.avg, global_step=epoch)
+            writer.add_scalar(f"train/x_loss", tem_train_x_loss.avg, global_step=epoch)
+            writer.add_scalar(f"train/rot_loss", tem_train_rot_loss.avg, global_step=epoch)
+            writer.add_scalar(f"sx", float(model.sx.detach().cpu()), global_step=epoch)
+            writer.add_scalar(f"sq", float(model.sq.detach().cpu()), global_step=epoch)
             writer.flush()
 
             # validation on all validation sequences
             for valloader in valloaders:
-                val_loss, pred_poses = val(model, valloader, criterion)
+                val_loss, pred_poses, x_epoch_loss, rot_epoch_loss = val(model, valloader, criterion_x, criterion_rot)
                 tem_val_loss.update(val_loss)
-                print('Epoch: {:03d}\t\tSeq: {}\t\tVal: {:.4f}'.format(epoch, valloader.dataset.sequence, val_loss))
-                save_pose_predictions(pred_poses, f"{epoch}_{valloader.dataset.sequence}.txt")
+                tem_val_x_loss.update(x_epoch_loss)
+                tem_val_rot_loss.update(rot_epoch_loss)
+                print(f'Epoch: {epoch:03d}\tSeq: {valloader.dataset.sequence}\tVal MSE: {val_loss:.3e}\t'
+                      f'X: {x_epoch_loss:.3e}\tRot: {rot_epoch_loss:.3e}')
+                save_pose_predictions(pred_poses, osp.join(args.weights_dir, f"{epoch}_{valloader.dataset.sequence}.txt"))
             valloss_hist.append(tem_val_loss.avg)
-            writer.add_scalar(f"val_loss", tem_val_loss.avg, global_step=epoch)
+            writer.add_scalar(f"val/mse_loss", tem_val_loss.avg, global_step=epoch)
+            writer.add_scalar(f"val/x_loss", tem_val_x_loss.avg, global_step=epoch)
+            writer.add_scalar(f"val/rot_loss", tem_val_rot_loss.avg, global_step=epoch)
             writer.flush()
-            save_best(model, epoch, strategy="trainloss")
+            save_best(model, epoch, savedir=args.weights_dir, strategy=args.save_strategy)
 
-            torch.cuda.empty_cache()
-
+            adjust_lr(optimizer, epoch)
+            print("-" * 50)
         writer.close()
-

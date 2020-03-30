@@ -1,9 +1,9 @@
-#!/usr/bin/python3  
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-""" 
+"""
 @Author: Xu Kaixin
-@License: Apache Licence 
+@License: Apache Licence
 @Time: 2020.03.24 : 上午 12:08
 @File Name: point_net.py
 @Software: PyCharm
@@ -89,6 +89,8 @@ class Net(torch.nn.Module):
             eval(act)(), Lin(64 * 2, 64), Dropout(dropout),
             eval(act)(), Lin(64, dof)
         )
+        self.sx = torch.nn.Parameter(torch.tensor(-2.5), requires_grad=True)
+        self.sq = torch.nn.Parameter(torch.tensor(-2.5), requires_grad=True)
 
         #for m in self.modules():
         #    if isinstance(m, Lin):
