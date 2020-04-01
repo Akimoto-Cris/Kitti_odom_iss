@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
-from model.dataloader import KittiStandard
-from model.utils import dDataLoaderX as DataLoader, PadCollate
+import pykitti
 import rospy
 from model.point_net import Net
 from sensor_msgs import point_cloud2
@@ -9,11 +8,17 @@ from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
 import argparse
 from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale, Compose
+from geometry_msgs.msg import TransformStamped
+import tf2_ros
+import numpy as np
+import torch
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model_path")
 parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, default=1.)
+parser.add_argument("--data_dir", type=str, default='/home/kartmann/share_folder/dataset')
+parser.add_argument("-s", "--sequence", type=str, default='00')
 parser.add_argument("--dropout", type=float, default=0.5)
 args = parser.parse_args()
 args_dict = vars(args)
@@ -21,49 +26,77 @@ print('Argument list to program')
 print('\n'.join(['--{0} {1}'.format(arg, args_dict[arg]) for arg in args_dict]))
 print('=' * 30)
 
-basedir = '/home/kartmann/share_folder/dataset'
-sequence = '00'
-frames = None   # range(0, 20, 5)
-fields = [PointField('x',           0,  PointField.FLOAT32, 1),
-          PointField('y',           4,  PointField.FLOAT32, 1),
-          PointField('z',           8,  PointField.FLOAT32, 1),
-          PointField('intensity',   12, PointField.FLOAT32, 1)]
 sleep_rate = 1.
 queue_size = 2
-
 LOAD_GRAPH = False
-GRID_SAMPLE_SIZE = [args.grid_size] * 3
-transform = Compose([#RandomTranslate(0.001),
-                     GridSampling(GRID_SAMPLE_SIZE),
-                     NormalizeScale()])
-
-model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=args.dropout)
-model.eval()
 
 
-def estimate_pose(source_cloud, target_cloud):
+class CloudPublishNode:
+    def __init__(self, node_name, cloud_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
+        rospy.init_node(node_name)
+        self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
+        self.transform_broadcaster = tf2_ros.TransformBroadcaster()
+        self.rate = rospy.Rate(sleep_rate)
+        self.header = Header()
+        self.header.frame_id = global_tf_name
+        self.child_tf_name = child_tf_name
+        self.dataset = dataset
 
+        transform = Compose([  # RandomTranslate(0.001),
+            GridSampling([args.grid_size] * 3),
+            NormalizeScale()])
+        self.model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=args.dropout)
+        self.model.eval()
+
+        self.fields = [PointField('x', 0, PointField.FLOAT32, 1),
+                       PointField('y', 4, PointField.FLOAT32, 1),
+                       PointField('z', 8, PointField.FLOAT32, 1),
+                       PointField('intensity', 12, PointField.FLOAT32, 1)]
+
+    def estimate_pose(self, target_cloud, source_cloud):
+        pose = self.model(source_cloud.unsqueeze(0), target_cloud.unsqueeze(0),
+                          torch.tensor(len(source_cloud)), torch.tensor(len(target_cloud)))
+        pose = pose.numpy()
+        return pose[0, :3], pose[0, 3:]
+
+    def publish_tfs(self, translation, quaternion, header):
+        t = TransformStamped()
+        t.header.header = header
+        t.child_frame_id = self.child_tf_name
+        t.transform.translation.x = translation[0]
+        t.transform.translation.y = translation[1]
+        t.transform.translation.z = translation[2]
+        t.transform.rotation.x = quaternion[0]
+        t.transform.rotation.y = quaternion[1]
+        t.transform.rotation.z = quaternion[2]
+        t.transform.rotation.w = quaternion[3]
+        self.transform_broadcaster.sendTransform(t)
+
+    def serve(self, idx):
+        current_cloud = self.dataset.get_velo(idx).numpy()
+        if idx == 0:
+            # guess 0 pose at first time frame
+            tr, quat = np.zeros((3,)), np.array([0., 0., 0., 1.])
+        else:
+            # estimate coarse pose relative to the previous frame with model
+            prev_cloud = self.dataset.get_velo(idx - 1).numpy()
+            tr, quat = self.estimate_pose(prev_cloud, current_cloud)
+
+        self.header.seq = idx
+        self.header.stamp = self.dataset.timestamps[idx]
+        pc2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
+        self.publish_tfs(tr, quat, self.header)
+        self.cloud_pub.publish(pc2)
+        rospy.logdebug(pc2)
+        self.rate.sleep()
+
+    def __call__(self):
+        for idx in range(len(self.dataset.poses)):
+            if rospy.is_shutdown():
+                break
+            self.serve(idx)
+        rospy.spin()
 
 
 if __name__ == '__main__':
-    rospy.init_node("cloudPublisher")
-    cloud_pub = rospy.Publisher("point_cloud2", PointCloud2, queue_size=queue_size)
-    pose_pub = rospy.Publisher("init_guess", PointCloud2, queue_size=queue_size)
-    rate = rospy.Rate(sleep_rate)
-    header = Header()
-    header.frame_id = "map"
-
-    dataset = KittiStandard(sequence, root=basedir)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0))
-
-    for idx, (target_cloud, source_cloud, pose_vect) in enumerate(dataloader):
-        if rospy.is_shutdown():
-            break
-        header.seq = idx
-        header.stamp = dataset.timestamps[idx]
-        pc2 = point_cloud2.create_cloud(header, fields, [point for point in cur_cloud])
-        cloud_pub.publish(pc2)
-        rospy.logdebug(pc2)
-        rate.sleep()
-
-    rospy.spin()
+    CloudPublishNode("cloudPublisher", "point_cloud2", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()

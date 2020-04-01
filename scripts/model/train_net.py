@@ -23,6 +23,8 @@ from collections import OrderedDict
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale, Compose
 import argparse
+from ignite.engine import Events
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--data_dir", default="/content/drive/My Drive/dataset")
@@ -49,7 +51,7 @@ print('Argument list to program')
 print('\n'.join(['--{0} {1}'.format(arg, args_dict[arg]) for arg in args_dict]))
 print('=' * 30)
 
-N_FOLD = args.n_fold
+N_FOLD = 5
 BATCH_SIZE = args.batch_size
 EPOCH = args.epoch
 LR = args.lr
@@ -152,13 +154,17 @@ if __name__ == '__main__':
     random.shuffle(sequence)
     print(sequence)
 
-    for i in range(N_FOLD):
+    for i in [1,2,3,4]:
         writer = SummaryWriter(args.log, comment=f"{i}_fold")
         trainloss_hist = []
         valloss_hist = []
 
-        train_seqences = sequence[(i+1) * len(sequence) // N_FOLD:]
-        val_seqences = sequence[:(i+1) * len(sequence) // N_FOLD]
+        val_seqences = sequence[i * len(sequence) // N_FOLD :(i+1) * len(sequence) // N_FOLD]
+        train_seqences = list(set(sequence) - set(val_seqences))
+
+        print("training on seq:", train_seqences)
+        print("validation on seq:", val_seqences)
+
         valsets = [Kitti(seq, root=args.data_dir) for seq in val_seqences]
 
         def save_best(model, epoch, savedir="checkpoint", strategy="valloss"):
@@ -168,7 +174,7 @@ if __name__ == '__main__':
                 print("weights saved to", save_path)
 
         valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
-                      dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0)) for valset in valsets]
+                          dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0)) for valset in valsets]
 
         device = torch.device('cuda:0' if torch.cuda.is_available() and args.gpu_first else 'cpu')
 
@@ -177,13 +183,15 @@ if __name__ == '__main__':
         start_epoch = 0
         if osp.exists(args.model_pth):
             saved_state_dict = torch.load(args.model_pth)
-            saved_state_dict["sx"] = torch.nn.Parameter(torch.tensor(-10.0))
+            #saved_state_dict["sx"] = torch.nn.Parameter(torch.tensor(-10.0))
             model.load_state_dict(saved_state_dict)
             print("loaded weights from", args.model_pth)
             start_epoch = int(re.findall(r"epoch=(\d+?)_", args.model_pth)[0])
             print("start from epoch", start_epoch)
             eval(re.findall(r"fold_([a-zA-Z0-9]+?)=", args.model_pth)[0] + "_hist").append(float(re.findall(r"fold_[a-zA-Z0-9]+?=([-+]?[0-9]{1,}[.][0-9]*)", args.model_pth)[0]))
         optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+        annealing = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.8, cooldown=5,
+                                                               min_lr=1e-5, eps=1e-5, verbose=True)
         criterion_x = nn.MSELoss().to(device)
         criterion_rot = nn.MSELoss().to(device)
 
@@ -230,13 +238,14 @@ if __name__ == '__main__':
                 print(f'Epoch: {epoch:03d}\tSeq: {valloader.dataset.sequence}\tVal MSE: {val_loss:.3e}\t'
                       f'X: {x_epoch_loss:.3e}\tRot: {rot_epoch_loss:.3e}')
                 save_pose_predictions(pred_poses, osp.join(args.weights_dir, f"{epoch}_{valloader.dataset.sequence}.txt"))
+
+            annealing.step(tem_val_loss.avg)
             valloss_hist.append(tem_val_loss.avg)
             writer.add_scalar(f"val/mse_loss", tem_val_loss.avg, global_step=epoch)
             writer.add_scalar(f"val/x_loss", tem_val_x_loss.avg, global_step=epoch)
             writer.add_scalar(f"val/rot_loss", tem_val_rot_loss.avg, global_step=epoch)
             writer.flush()
             save_best(model, epoch, savedir=args.weights_dir, strategy=args.save_strategy)
-
             adjust_lr(optimizer, epoch)
             print("-" * 50)
         writer.close()

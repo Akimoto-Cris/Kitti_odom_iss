@@ -9,6 +9,13 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="kartmann@192.168.87.31:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/kartmann/share_folder/kitti_localization" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="ziyuan@10.2.153.246:22">
         <serverdata>
           <mappings>
