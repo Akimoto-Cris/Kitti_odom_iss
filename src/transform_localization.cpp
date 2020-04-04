@@ -1,7 +1,7 @@
-/**
+/*
 @Author: Xu Kaixin
 @License: Apache Licence
-**/
+*/
 #include <ros/ros.h>
 #include <pcl_ros/point_cloud.h>
 #include <std_msgs/Header.h>
@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <map>
 #include <climits>
+#include <boost/shared_ptr.hpp>
 #include <bits/stdc++.h>
 
 typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
@@ -30,13 +31,25 @@ PointCloud::Ptr source_cloud_ptr ( new PointCloud );
 PointCloud::Ptr target_cloud_ptr ( new PointCloud );
 PointCloud::Ptr cloud_ptr ( new PointCloud );
 KdTreeReciprocalPtr target_tree ( new KdTreeReciprocal );
-map<uint, Eigen::Matrix4f> tf_queue;
-uint seq = 0;
-uint TF_QUEUE_SIZE = 10;
-
-static tf::TransformBroadcaster br;
+map<uint, Eigen::Matrix4f>* tf_queue_ptr ( new map<uint, Eigen::Matrix4f> );
+uint *seq ( new uint );
+uint *TF_QUEUE_SIZE ( new uint ) ;
+boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
 //tf::TransformListener tf_listener;
 
+void initGlobals()
+{
+  /*
+  source_cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
+  target_cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
+  cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
+  target_tree = boost::shared_ptr<KdTreeReciprocal> ( new KdTreeReciprocal );
+  tf_queue_ptr = new map<uint, Eigen::Matrix4f>;
+  *seq = 0;
+  *TF_QUEUE_SIZE = 10;
+  */
+  br_ptr.reset( new tf::TransformBroadcaster );
+}
 
 Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
 {
@@ -94,55 +107,55 @@ void save_transform_to_file (const char* filename, const Eigen::Matrix4f& Tmf)
   FILE* fp;
   if ( ( fp = fopen ( filename, "a+" ) ) == NULL ) printf("cannot open file!\n");
   fprintf( fp, "%f %f %f %f %f %f %f %f %f %f %f %f",
-                &Tmf(0, 0), &Tmf(0, 1), &Tmf(0, 2), &Tmf(0, 3),
-                &Tmf(1, 0), &Tmf(1, 1), &Tmf(1, 2), &Tmf(1, 3),
-                &Tmf(2, 0), &Tmf(2, 1), &Tmf(2, 2), &Tmf(2, 3) );
+                Tmf(0, 0), Tmf(0, 1), Tmf(0, 2), Tmf(0, 3),
+                Tmf(1, 0), Tmf(1, 1), Tmf(1, 2), Tmf(1, 3),
+                Tmf(2, 0), Tmf(2, 1), Tmf(2, 2), Tmf(2, 3) );
   fclose ( fp );
 }
 
 
-void broadcast_transform (Eigen::Matrix4f transformMatrix )
+void broadcast_transform (Eigen::Matrix4f Tmf )
 {
-  Eigen::Matrix4d Tmd = transformMatrix.cast<double> ();
+  //Eigen::Matrix4d Tmd = transformMatrix.cast<double> ();
   tf::Matrix3x3 tf3d;
-  tf3d.setValue ( Tmd(0, 0), Tmd(0, 1), Tmd(0, 2),
-                  Tmd(1, 0), Tmd(1, 1), Tmd(1, 2),
-                  Tmd(2, 0), Tmd(2, 1), Tmd(2, 2) );
+  tf3d.setValue ( Tmf(0, 0), Tmf(0, 1), Tmf(0, 2),
+                  Tmf(1, 0), Tmf(1, 1), Tmf(1, 2),
+                  Tmf(2, 0), Tmf(2, 1), Tmf(2, 2) );
   tf::Quaternion q;
   tf3d.getRotation ( q );
 
   geometry_msgs::TransformStamped transformStamped;
   transformStamped.header.stamp = ros::Time::now ();
   transformStamped.header.frame_id = "map";
-  transformStamped.header.seq = seq;
+  transformStamped.header.seq = *seq;
   transformStamped.child_frame_id = "car";
-  transformStamped.transform.translation.x = Tmd(0, 3);
-  transformStamped.transform.translation.y = Tmd(1, 3);
-  transformStamped.transform.translation.z = Tmd(2, 3);
+  transformStamped.transform.translation.x = Tmf(0, 3);
+  transformStamped.transform.translation.y = Tmf(1, 3);
+  transformStamped.transform.translation.z = Tmf(2, 3);
   transformStamped.transform.rotation.x = q.x ();
   transformStamped.transform.rotation.y = q.y ();
   transformStamped.transform.rotation.z = q.z ();
   transformStamped.transform.rotation.w = q.w ();
-  br.sendTransform ( transformStamped );
+  br_ptr->sendTransform ( transformStamped );
 }
 
 
 void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
 {
-  seq = input->header.seq;
+  *seq = input->header.seq;
   cloud_ptr.reset ( new PointCloud );    // still need to reset meh?
   pcl::fromROSMsg ( *input, *cloud_ptr );
 
   cout << "Received Pointcloud of size " << cloud_ptr->size () << endl;
 
-  if ( seq == 0 )
+  if ( *seq == 0 )
   {
     pcl::copyPointCloud ( *cloud_ptr, *source_cloud_ptr );
   }
   else
   {
     target_cloud_ptr = cloud_ptr;
-    Eigen::Matrix4f transformMatrix = localize ( tf_queue[seq] );
+    Eigen::Matrix4f transformMatrix = localize ( tf_queue_ptr->find ( *seq )->second );
     broadcast_transform ( transformMatrix );
     source_cloud_ptr = target_cloud_ptr;
   }
@@ -169,19 +182,21 @@ void pose_guess_callback ( const geometry_msgs::TransformStamped stamped_transfo
 {
   cout << "Received TF Guess:\n" << stamped_transform << endl;
 
-  if ( tf_queue.size () >= TF_QUEUE_SIZE ) { tf_queue.erase ( tf_queue.begin ()->first ); }
+  if ( tf_queue_ptr->size () >= *TF_QUEUE_SIZE ) { tf_queue_ptr->erase ( tf_queue_ptr->begin ()->first ); }
   tf::StampedTransform temp_tf;
   tf::transformStampedMsgToTF (stamped_transform, temp_tf);
-  tf_queue[stamped_transform.header.seq] = tf2d_to_matrix4f ( stamped_transform );
+
+  tf_queue_ptr->insert ( make_pair<uint, Eigen::Matrix4f>( (uint) stamped_transform.header.seq, tf2d_to_matrix4f ( stamped_transform ) ) );
 }
 
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "sub_pcl");
+  ros::init ( argc, argv, "sub_pcl" );
   ros::NodeHandle nh;
-  ros::Subscriber subPoseGuess = nh.subscribe<geometry_msgs::TransformStamped> ("init_guess", 1, &pose_guess_callback);
-  ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ("point_cloud2", 1, &pcl_callback);
+  initGlobals ();
+  ros::Subscriber subPoseGuess = nh.subscribe<geometry_msgs::TransformStamped> ( "/init_guess", 1, &pose_guess_callback );
+  ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ( "/point_cloud2", 1, &pcl_callback );
 
-  ros::spin();
+  ros::spin ();
 }

@@ -12,20 +12,22 @@
 import pykitti
 import rospy
 from model.point_net import Net
+from model.utils import ComposeAdapt
+from collections import OrderedDict
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
 import argparse
 from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale, Compose
 from geometry_msgs.msg import TransformStamped
-import tf2_ros
 import numpy as np
 import torch
+import os.path as osp
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-m", "--model_path")
-parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, default=1.)
+parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, default=3)
 parser.add_argument("--data_dir", type=str, default='/home/kartmann/share_folder/dataset')
 parser.add_argument("-s", "--sequence", type=str, default='00')
 parser.add_argument("--dropout", type=float, default=0.5)
@@ -52,10 +54,14 @@ class CloudPublishNode:
         self.child_tf_name = child_tf_name
         self.dataset = dataset
 
-        transform = Compose([  # RandomTranslate(0.001),
-            GridSampling([args.grid_size] * 3),
-            NormalizeScale()])
-        self.model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=args.dropout)
+        transform_dict = OrderedDict()
+        transform_dict[GridSampling([args.grid_size] * 3)] = ["train", "test"]
+        transform_dict[NormalizeScale()] = ["train", "test"]
+        transform = ComposeAdapt(transform_dict)
+        self.model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=args.dropout, dof=7)
+        if args.model_path is not None and osp.exists(args.model_path):
+            self.model.load_state_dict(torch.load(args.model_path, map_location=torch.device("cpu")))
+            print("loaded weights from", args.model_path)
         self.model.eval()
 
         self.fields = [PointField('x', 0, PointField.FLOAT32, 1),
@@ -64,14 +70,17 @@ class CloudPublishNode:
                        PointField('intensity', 12, PointField.FLOAT32, 1)]
 
     def estimate_pose(self, target_cloud, source_cloud):
-        pose = self.model(source_cloud.unsqueeze(0), target_cloud.unsqueeze(0),
-                          torch.tensor(len(source_cloud)), torch.tensor(len(target_cloud)))
-        pose = pose.numpy()
+        source_cloud = torch.from_numpy(source_cloud)
+        target_cloud = torch.from_numpy(target_cloud)
+
+        pose = self.model((source_cloud.unsqueeze(0), target_cloud.unsqueeze(0),
+                          torch.tensor(len(source_cloud)).unsqueeze(0), torch.tensor(len(target_cloud)).unsqueeze(0)))
+        pose = pose.detach().numpy()
         return pose[0, :3], pose[0, 3:]
 
     def publish_tfs(self, translation, quaternion, header):
         t = TransformStamped()
-        t.header.header = header
+        t.header = header
         t.child_frame_id = self.child_tf_name
         t.transform.translation.x = translation[0]
         t.transform.translation.y = translation[1]
@@ -84,17 +93,17 @@ class CloudPublishNode:
         self.tf_pub.publish(t)
 
     def serve(self, idx):
-        current_cloud = self.dataset.get_velo(idx).numpy()
+        current_cloud = self.dataset.get_velo(idx)
         if idx == 0:
             # guess 0 pose at first time frame
             tr, quat = np.zeros((3,)), np.array([0., 0., 0., 1.])
         else:
             # estimate coarse pose relative to the previous frame with model
-            prev_cloud = self.dataset.get_velo(idx - 1).numpy()
+            prev_cloud = self.dataset.get_velo(idx - 1)
             tr, quat = self.estimate_pose(prev_cloud, current_cloud)
 
         self.header.seq = idx
-        self.header.stamp = self.dataset.timestamps[idx]
+        self.header.stamp = rospy.Time.from_sec(self.dataset.timestamps[idx].total_seconds())
         pc2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
         self.publish_tfs(tr, quat, self.header)
         self.cloud_pub.publish(pc2)
