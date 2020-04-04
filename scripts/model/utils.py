@@ -1,14 +1,15 @@
-#!/usr/bin/python3  
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-""" 
+"""
 @Author: Xu Kaixin
-@License: Apache Licence 
+@License: Apache Licence
 @Time: 2020.03.28 : 上午 10:25
 @File Name: utils.py
 @Software: PyCharm
 -----------------
 """
+from itertools import chain
 from scipy.spatial.transform import Rotation
 from prefetch_generator import BackgroundGenerator
 import numpy as np
@@ -17,15 +18,19 @@ from torch.utils.data import DataLoader as dDataLoader
 from torch_geometric.data import DataLoader as gDataLoader, Data as gData
 
 
-def save_pose_predictions(pred_poses: list, save_path):
+def save_pose_predictions(init_pose, pred_poses: list, save_path):
+    absolute_pose = init_pose
     with open(save_path, "w") as f:
-        for batch_pose in pred_poses:
+        for i, batch_pose in enumerate(pred_poses):
             for pose in batch_pose:
                 rot = Rotation.from_quat(pose[3:]).as_dcm()
-                pose_dcm = np.concatenate([rot, pose[:3].reshape(-1, 1)], axis=1).reshape(-1)
-                pose_dcm_str = map(lambda x: str(x), list(pose_dcm))
+                absolute_rot = np.dot(absolute_pose[:3, :3].T, rot)
+                absolute_trans = pose[:3] + absolute_pose[:3, -1]
+                absolute_pose = np.hstack([absolute_rot, absolute_trans.reshape(-1, 1)])
+                pose_dcm_str = map(lambda x: f"{x:4e}", list(absolute_pose.reshape(-1)))
                 f.write(" ".join(tuple(pose_dcm_str)) + "\n")
-        print("poses writed to", save_path)
+
+        #print("poses writed to", save_path)
 
 
 class AverageMeter:
@@ -156,3 +161,20 @@ def l2reg(model):
     for param in model.parameters():
         l2_reg += torch.norm(param)
     return l2_reg
+
+
+class ComposeAdapt:
+    def __init__(self, transforms: dict):
+        self.transforms = transforms
+        assert set(list(chain(*transforms.values()))) - {"train", "test"} == set()
+
+    def __call__(self, data, mode):
+        assert mode in ["train", "test"]
+        for t, modes in self.transforms.items():
+            if mode in modes:
+                data = t(data)
+        return data
+
+    def __repr__(self):
+        args = ['    {}: {},'.format(k, t) for k, t in self.transforms.items()]
+        return '{}([\n{}\n])'.format(self.__class__.__name__, '\n'.join(args))

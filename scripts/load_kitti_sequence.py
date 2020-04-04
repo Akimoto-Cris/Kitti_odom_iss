@@ -1,5 +1,14 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
+"""
+@Author: Xu Kaixin
+@License: Apache Licence
+@Time: 2020.03.19 : 上午 12:15
+@File Name: dataloader.py
+@Software: PyCharm
+-----------------
+"""
 import pykitti
 import rospy
 from model.point_net import Net
@@ -32,10 +41,11 @@ LOAD_GRAPH = False
 
 
 class CloudPublishNode:
-    def __init__(self, node_name, cloud_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
+    def __init__(self, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
         rospy.init_node(node_name)
         self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
-        self.transform_broadcaster = tf2_ros.TransformBroadcaster()
+        #self.transform_broadcaster = tf2_ros.TransformBroadcaster()
+        self.tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)
         self.rate = rospy.Rate(sleep_rate)
         self.header = Header()
         self.header.frame_id = global_tf_name
@@ -70,7 +80,8 @@ class CloudPublishNode:
         t.transform.rotation.y = quaternion[1]
         t.transform.rotation.z = quaternion[2]
         t.transform.rotation.w = quaternion[3]
-        self.transform_broadcaster.sendTransform(t)
+        #self.transform_broadcaster.sendTransform(t)
+        self.tf_pub.publish(t)
 
     def serve(self, idx):
         current_cloud = self.dataset.get_velo(idx).numpy()
@@ -99,4 +110,4 @@ class CloudPublishNode:
 
 
 if __name__ == '__main__':
-    CloudPublishNode("cloudPublisher", "point_cloud2", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()
+    CloudPublishNode("cloudPublisher", "point_cloud2", "init_guess", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()

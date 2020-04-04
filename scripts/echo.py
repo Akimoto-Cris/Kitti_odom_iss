@@ -208,6 +208,7 @@ def positive_int(x):
         raise argparse.ArgumentTypeError("{} must be > 0".format(x))
     return x
 
+
 if __name__ == '__main__':
     rospy.init_node("echo")
     parser = argparse.ArgumentParser()

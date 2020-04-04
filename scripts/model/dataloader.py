@@ -42,10 +42,10 @@ class KittiStandard(dDataset):
         source_cloud = self.dataset.get_velo(idx + 1)
         source_pose = self.dataset.poses[idx + 1]
 
-        pose = np.dot(np.linalg.inv(target_pose), source_pose)
-        rotation = Rotation.from_dcm(pose[:3, :3]).as_quat()
-        translation = pose[:, -1]
-        pose_vect = np.hstack([translation[:-1], rotation])
+        delta_rotation = np.dot(source_pose[:3, :3], target_pose[:3, :3].T)
+        rotation = Rotation.from_matrix(delta_rotation).as_quat()
+        translation = source_pose[:, -1] - target_pose[:, -1]
+        pose_vect = np.hstack([translation[:3], rotation])
         return target_cloud, source_cloud, pose_vect
 
 

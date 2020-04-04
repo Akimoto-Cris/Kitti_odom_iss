@@ -16,12 +16,12 @@ import torch
 import torch.nn as nn
 from dataloader import KittiGraph, KittiStandard
 from point_net import Net
-from utils import save_pose_predictions, AverageMeter, dDataLoaderX, gDataLoaderX, PadCollate, l2reg
+from utils import save_pose_predictions, AverageMeter, dDataLoaderX, gDataLoaderX, PadCollate, l2reg, ComposeAdapt
 import tqdm
 import re
 from collections import OrderedDict
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale, Compose
+from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale
 import argparse
 from ignite.engine import Events
 
@@ -45,6 +45,7 @@ parser.add_argument("--log", default="log", type=str)
 parser.add_argument("--dof", default=7, type=int)
 parser.add_argument("--save_strategy", default="trainloss", type=str)
 parser.add_argument("--reg_lambda", default=10e-4, type=float)
+parser.add_argument("-rt", "--random_trans", default=1e-3, type=float)
 args = parser.parse_args()
 args_dict = vars(args)
 print('Argument list to program')
@@ -65,9 +66,11 @@ torch.backends.cudnn.benchmark = True
 Kitti = KittiGraph if LOAD_GRAPH else KittiStandard
 L2_LAMBDA = args.reg_lambda
 
-transform = Compose([#RandomTranslate(0.001),
-                     GridSampling(GRID_SAMPLE_SIZE),
-                     NormalizeScale()])
+transform_dict = OrderedDict()
+transform_dict[GridSampling(GRID_SAMPLE_SIZE)] = ["train", "test"]
+transform_dict[NormalizeScale()] = ["train", "test"]
+transform_dict[RandomTranslate(args.random_trans)] = ["train"]
+transform = ComposeAdapt(transform_dict)
 #transform = GridSampling(GRID_SAMPLE_SIZE)
 
 
@@ -155,9 +158,10 @@ if __name__ == '__main__':
     print(sequence)
 
     for i in [1,2,3,4]:
-        writer = SummaryWriter(args.log, comment=f"{i}_fold")
+        writer = SummaryWriter(args.log, comment=f"{i}_fold/{args.weights_dir}")
         trainloss_hist = []
         valloss_hist = []
+        valxloss_hist = []
 
         val_seqences = sequence[i * len(sequence) // N_FOLD :(i+1) * len(sequence) // N_FOLD]
         train_seqences = list(set(sequence) - set(val_seqences))
@@ -237,10 +241,12 @@ if __name__ == '__main__':
                 tem_val_rot_loss.update(rot_epoch_loss)
                 print(f'Epoch: {epoch:03d}\tSeq: {valloader.dataset.sequence}\tVal MSE: {val_loss:.3e}\t'
                       f'X: {x_epoch_loss:.3e}\tRot: {rot_epoch_loss:.3e}')
-                save_pose_predictions(pred_poses, osp.join(args.weights_dir, f"{epoch}_{valloader.dataset.sequence}.txt"))
+                save_pose_predictions(valloader.dataset.dataset.poses[0], pred_poses,
+                                      osp.join(args.weights_dir, f"{epoch}_{valloader.dataset.sequence}.txt"))
 
             annealing.step(tem_val_loss.avg)
-            valloss_hist.append(tem_val_loss.avg)
+            valloss_hist.append(-tem_val_loss.avg)
+            valxloss_hist.append(tem_val_x_loss.avg)
             writer.add_scalar(f"val/mse_loss", tem_val_loss.avg, global_step=epoch)
             writer.add_scalar(f"val/x_loss", tem_val_x_loss.avg, global_step=epoch)
             writer.add_scalar(f"val/rot_loss", tem_val_rot_loss.avg, global_step=epoch)

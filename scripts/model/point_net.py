@@ -102,8 +102,8 @@ class Net(torch.nn.Module):
             t_encode = self.pointnet(input.x_t, input.pos_t, input.x_t_batch.long())
         else:
             graph_s, graph_t = x_pos_batch_to_pair_biggraph_pair(*input[:4])
-            graph_s = self.transform(graph_s) if self.transform else graph_s
-            graph_t = self.transform(graph_t) if self.transform else graph_t
+            graph_s = self.transform(graph_s, "train" if self.training else "test") if self.transform else graph_s
+            graph_t = self.transform(graph_t, "train" if self.training else "test") if self.transform else graph_t
 
             s_encode = self.pointnet(graph_s.x, graph_s.pos, graph_s.batch)
             t_encode = self.pointnet(graph_t.x, graph_t.pos, graph_t.batch)
@@ -117,8 +117,8 @@ def x_pos_batch_to_pair_biggraph_pair(cloud_s_all, cloud_t_all, lss, lst):
     for i, (ls, lt, cloud_s, cloud_t) in enumerate(zip(lss, lst, cloud_s_all, cloud_t_all)):
         x_pos_s_all += [cloud_s[:ls, :]]
         x_pos_t_all += [cloud_t[:lt, :]]
-        batch_s += [torch.ones(ls, ).long().unsqueeze(1).to(lss.device) * i]
-        batch_t += [torch.ones(lt, ).long().unsqueeze(1).to(lst.device) * i]
+        batch_s += [torch.ones(ls,).long().unsqueeze(1).to(lss.device) * i]
+        batch_t += [torch.ones(lt,).long().unsqueeze(1).to(lst.device) * i]
 
     x_pos_s_all = torch.cat(x_pos_s_all, dim=0)
     x_pos_t_all = torch.cat(x_pos_t_all, dim=0)
