@@ -27,33 +27,26 @@ using KdTreeReciprocal = pcl::search::KdTree<pcl::PointXYZ>;
 using KdTreeReciprocalPtr = typename KdTreeReciprocal::Ptr;
 using namespace std;
 
-PointCloud::Ptr source_cloud_ptr ( new PointCloud );
-PointCloud::Ptr target_cloud_ptr ( new PointCloud );
 PointCloud::Ptr cloud_ptr ( new PointCloud );
 KdTreeReciprocalPtr target_tree ( new KdTreeReciprocal );
-map<uint, Eigen::Matrix4f>* tf_queue_ptr ( new map<uint, Eigen::Matrix4f> );
-uint *seq ( new uint );
-uint *TF_QUEUE_SIZE ( new uint ) ;
+map<uint, Eigen::Matrix4f> tf_queue;
+map<uint, PointCloud::Ptr> pc_queue;
+uint *QUEUE_SIZE ( new uint ) ;
 boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
 //tf::TransformListener tf_listener;
 
 
 void initGlobals()
 {
-  /*
-  source_cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
-  target_cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
-  cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
-  target_tree = boost::shared_ptr<KdTreeReciprocal> ( new KdTreeReciprocal );
-  tf_queue_ptr = new map<uint, Eigen::Matrix4f>;
-  */
-  *seq = 0;
-  *TF_QUEUE_SIZE = 20;
+  *QUEUE_SIZE = 20; // must larger than 2
   br_ptr.reset( new tf::TransformBroadcaster );
 }
 
 
-Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
+Eigen::Matrix4f localize (
+  const PointCloud::Ptr& target_cloud_ptr,
+  const PointCloud::Ptr& source_cloud_ptr,
+  const Eigen::Matrix4f init_guess)
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
@@ -66,7 +59,6 @@ Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
 
   pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
 
-
   ndt.setTransformationEpsilon ( 0.01 );
   ndt.setStepSize ( 0.1 );
   ndt.setResolution ( 1.5 );
@@ -74,7 +66,6 @@ Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
   ndt.setInputSource ( filtered_cloud_ptr );
   ndt.setInputTarget ( target_cloud_ptr );
   ndt.setSearchMethodTarget ( target_tree );
-
   /*init_guess << 1.,   0.0005,   -0.002,   -0.05,
                 -0.0005,  1.,   -0.001,   -0.03,
                 0.002, 0.001,       1.,   0.085,
@@ -83,9 +74,8 @@ Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
   PointCloud::Ptr output_cloud_ptr ( new PointCloud );
   ndt.align ( *output_cloud_ptr, init_guess );
 
-  cout << "NDT has converged:" << ndt.hasConverged ()
-       << " in " << ndt.getFinalNumIteration () << " iters \n"
-       << " score: " << ndt.getFitnessScore () << endl;
+  cout << "NDT has converged: [" << ndt.hasConverged () << "]\tin " << ndt.getFinalNumIteration ()
+       << " iters\nscore: " << ndt.getFitnessScore () << endl;
 
   Eigen::Matrix4f transormMatrix = ndt.getFinalTransformation ();
   pcl::transformPointCloud ( *target_cloud_ptr, *output_cloud_ptr, transormMatrix );
@@ -106,7 +96,7 @@ void save_transform_to_file (const char* filename, const Eigen::Matrix4f& Tmf)
 }
 
 
-void broadcast_transform (Eigen::Matrix4f Tmf )
+void broadcast_transform (Eigen::Matrix4f Tmf, uint s)
 {
   //Eigen::Matrix4d Tmd = transformMatrix.cast<double> ();
   tf::Matrix3x3 tf3d;
@@ -119,7 +109,7 @@ void broadcast_transform (Eigen::Matrix4f Tmf )
   geometry_msgs::TransformStamped transformStamped;
   transformStamped.header.stamp = ros::Time::now ();
   transformStamped.header.frame_id = "map";
-  transformStamped.header.seq = *seq;
+  transformStamped.header.seq = s;
   transformStamped.child_frame_id = "car";
   transformStamped.transform.translation.x = Tmf(0, 3);
   transformStamped.transform.translation.y = Tmf(1, 3);
@@ -134,26 +124,26 @@ void broadcast_transform (Eigen::Matrix4f Tmf )
 
 void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
 {
-  *seq = input->header.seq;
-  //cloud_ptr.reset ( new PointCloud );    // still need to reset meh?
   pcl::fromROSMsg ( *input, *cloud_ptr );
-
   cout << "Received Pointcloud of size " << cloud_ptr->size () << endl;
 
-  if ( *seq == 0 ) pcl::copyPointCloud ( *cloud_ptr, *target_cloud_ptr );
+  if ( pc_queue.size () >= *QUEUE_SIZE ) { pc_queue.erase (pc_queue.begin ()->first ); }
+  //pc_queue->insert ( make_pair<uint, PointCloud::Ptr> ( (uint) input->header.seq, cloud_ptr ) );
+  pc_queue[(uint) input->header.seq] = cloud_ptr;
+  /*if ( *seq == 0 ) pcl::copyPointCloud ( *cloud_ptr, *target_cloud_ptr );
   else
   {
     source_cloud_ptr = cloud_ptr;
-    auto it = tf_queue_ptr->find ( *seq );
-    if (it != tf_queue_ptr->end () )
+    auto it = tf_queue->find ( *seq );
+    if (it != tf_queue->end () )
     {
       cout << "Matched seq in tf_queue: " << *seq << endl;
       Eigen::Matrix4f transformMatrix = localize ( it->second );
       broadcast_transform ( transformMatrix );
       target_cloud_ptr = source_cloud_ptr;
-      tf_queue_ptr->erase ( it->first );
+      tf_queue->erase ( it->first );
     }
-  }
+  }*/
 }
 
 
@@ -176,8 +166,8 @@ void pose_guess_callback ( const geometry_msgs::TransformStamped stamped_transfo
 {
   cout << "Received TF Guess:\n" << stamped_transform << endl;
 
-  if ( tf_queue_ptr->size () >= *TF_QUEUE_SIZE ) { tf_queue_ptr->erase ( tf_queue_ptr->begin ()->first ); }
-  tf_queue_ptr->insert ( make_pair<uint, Eigen::Matrix4f>( (uint) stamped_transform.header.seq, tf2d_to_matrix4f ( stamped_transform ) ) );
+  if ( tf_queue.size () >= *QUEUE_SIZE ) { tf_queue.erase ( tf_queue.begin ()->first ); }
+  tf_queue.insert ( make_pair<uint, Eigen::Matrix4f>( (uint) stamped_transform.header.seq, tf2d_to_matrix4f ( stamped_transform ) ) );
 }
 
 
@@ -188,7 +178,7 @@ void cloud_and_pose_callback (const kitti_localization::CloudAndPose& cap_msg)
   pose_guess_callback ( cap_msg.init_guess );
   pcl_callback ( boost::make_shared<sensor_msgs::PointCloud2> ( cap_msg.point_cloud2 ) );
 
-  printf("TF_QUEUE current size: %d\n\n", tf_queue_ptr->size ());
+  printf("TF_QUEUE current size: %d\n\n", tf_queue.size ());
 }
 
 
@@ -200,5 +190,33 @@ int main(int argc, char** argv)
   //ros::Subscriber subPoseGuess = nh.subscribe<geometry_msgs::TransformStamped> ( "/init_guess", 1, &pose_guess_callback );
   //ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ( "/point_cloud2", 1, &pcl_callback );
   ros::Subscriber subCloudAndPose = nh.subscribe ( "/CAP", 1, cloud_and_pose_callback );
+  ros::Rate rate ( 1. );
+
+  uint seq = 1;
+  while ( nh.ok () )
+  {
+    auto it = pc_queue.find ( seq );
+    // wait until received at least 2 frames data from publisher
+    if ( it != pc_queue.end () && pc_queue.size () > 1 && tf_queue.size () > 1 )
+    {
+      PointCloud::Ptr target_cloud_ptr = it->second;
+      auto prev_it = pc_queue.find ( seq - 1 );
+      if ( prev_it == pc_queue.end () ) { cout << "Cannot find 0th frame pointcloud, exit." << endl; return -1; }
+      PointCloud::Ptr source_cloud_ptr = prev_it->second;
+
+      auto it_tf = tf_queue.find ( seq );
+      if ( it_tf == tf_queue.end () ) { cout << "Cannot find 0th frame init_guss, exit." << endl; return -1; }
+      auto init_guess = it_tf->second;
+
+      auto transformMatrix = localize ( target_cloud_ptr, source_cloud_ptr, init_guess );
+      cout << "NDT result: \n" << transformMatrix << endl;
+
+      broadcast_transform ( transformMatrix , seq );
+      seq++;
+    }
+    // rate.sleep ();
+    // since ndt iteration definitely takes more time than receiving data.
+  }
   ros::spin ();
+  return 0;
 }
