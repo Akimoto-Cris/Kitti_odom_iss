@@ -13,6 +13,7 @@
 #include <tf/transform_listener.h>
 #include <tf2_eigen/tf2_eigen.h>
 #include <geometry_msgs/TransformStamped.h>
+#include <kitti_localization/CloudAndPose.h>
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +23,6 @@
 #include <bits/stdc++.h>
 
 typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
-
 using KdTreeReciprocal = pcl::search::KdTree<pcl::PointXYZ>;
 using KdTreeReciprocalPtr = typename KdTreeReciprocal::Ptr;
 using namespace std;
@@ -37,6 +37,7 @@ uint *TF_QUEUE_SIZE ( new uint ) ;
 boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
 //tf::TransformListener tf_listener;
 
+
 void initGlobals()
 {
   /*
@@ -45,44 +46,36 @@ void initGlobals()
   cloud_ptr = boost::shared_ptr<PointCloud> ( new PointCloud );
   target_tree = boost::shared_ptr<KdTreeReciprocal> ( new KdTreeReciprocal );
   tf_queue_ptr = new map<uint, Eigen::Matrix4f>;
-  *seq = 0;
-  *TF_QUEUE_SIZE = 10;
   */
+  *seq = 0;
+  *TF_QUEUE_SIZE = 20;
   br_ptr.reset( new tf::TransformBroadcaster );
 }
+
 
 Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
-  approximate_voxel_filter.setLeafSize ( 1, 1, 1 );
-  approximate_voxel_filter.setInputCloud ( target_cloud_ptr );
+  approximate_voxel_filter.setLeafSize ( 3, 3, 3 );
+  approximate_voxel_filter.setInputCloud ( source_cloud_ptr );
   approximate_voxel_filter.filter ( *filtered_cloud_ptr );
+  target_tree->setInputCloud ( target_cloud_ptr );
 
   cout << "Filtered cloud contains " << filtered_cloud_ptr->size () << " data points" << endl;
 
   pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
-  target_tree->setInputCloud ( target_cloud_ptr );
+
 
   ndt.setTransformationEpsilon ( 0.01 );
   ndt.setStepSize ( 0.1 );
-  ndt.setResolution ( 1.0 );
-  ndt.setMaximumIterations ( 35 );
+  ndt.setResolution ( 1.5 );
+  ndt.setMaximumIterations ( 20 );
   ndt.setInputSource ( filtered_cloud_ptr );
-  ndt.setInputTarget ( source_cloud_ptr );
+  ndt.setInputTarget ( target_cloud_ptr );
   ndt.setSearchMethodTarget ( target_tree );
 
-  /*tf::Matrix3x3 tf3d;
-  tf::Quaternion q ( transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w );
-  tf3d.setRotation ( q );
-
-  Eigen::Matrix4f init_guess;
-  init_guess << tf3d[0][0], tf3d[0][1], tf3d[0][2], transform.translation.x,
-                tf3d[1][0], tf3d[1][1], tf3d[1][2], transform.translation.y,
-                tf3d[2][0], tf3d[2][1], tf3d[2][2], transform.translation.z,
-                0.,         0.,         0.,         1.;
-
-  init_guess << 1.,   0.0005,   -0.002,   -0.05,
+  /*init_guess << 1.,   0.0005,   -0.002,   -0.05,
                 -0.0005,  1.,   -0.001,   -0.03,
                 0.002, 0.001,       1.,   0.085,
                 0.,       0.,       0.,      1.;*/
@@ -97,7 +90,6 @@ Eigen::Matrix4f localize (const Eigen::Matrix4f& init_guess)
   Eigen::Matrix4f transormMatrix = ndt.getFinalTransformation ();
   pcl::transformPointCloud ( *target_cloud_ptr, *output_cloud_ptr, transormMatrix );
 
-  cout << "Transorm Matrix:\n" << transormMatrix << "\n==================" << endl;
   return transormMatrix;
 }
 
@@ -143,23 +135,25 @@ void broadcast_transform (Eigen::Matrix4f Tmf )
 void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
 {
   *seq = input->header.seq;
-  cloud_ptr.reset ( new PointCloud );    // still need to reset meh?
+  //cloud_ptr.reset ( new PointCloud );    // still need to reset meh?
   pcl::fromROSMsg ( *input, *cloud_ptr );
 
   cout << "Received Pointcloud of size " << cloud_ptr->size () << endl;
 
-  if ( *seq == 0 )
-  {
-    pcl::copyPointCloud ( *cloud_ptr, *source_cloud_ptr );
-  }
+  if ( *seq == 0 ) pcl::copyPointCloud ( *cloud_ptr, *target_cloud_ptr );
   else
   {
-    target_cloud_ptr = cloud_ptr;
-    Eigen::Matrix4f transformMatrix = localize ( tf_queue_ptr->find ( *seq )->second );
-    broadcast_transform ( transformMatrix );
-    source_cloud_ptr = target_cloud_ptr;
+    source_cloud_ptr = cloud_ptr;
+    auto it = tf_queue_ptr->find ( *seq );
+    if (it != tf_queue_ptr->end () )
+    {
+      cout << "Matched seq in tf_queue: " << *seq << endl;
+      Eigen::Matrix4f transformMatrix = localize ( it->second );
+      broadcast_transform ( transformMatrix );
+      target_cloud_ptr = source_cloud_ptr;
+      tf_queue_ptr->erase ( it->first );
+    }
   }
-  // grasp the pose guess corresponding to this grame of scan
 }
 
 
@@ -174,19 +168,27 @@ Eigen::Matrix4f tf2d_to_matrix4f (const geometry_msgs::TransformStamped transfor
   return (tl_btol * rot_z_btol * rot_y_btol * rot_x_btol).matrix().inverse();*/
   Eigen::Affine3d tf3d = tf2::transformToEigen ( transform );
   Eigen::Affine3f tf3f = tf3d.cast<float> ();
-  Eigen::Matrix4f tf4f = tf3f.matrix ();
-  return tf4f;
+  return tf3f.matrix ();
 }
+
 
 void pose_guess_callback ( const geometry_msgs::TransformStamped stamped_transform )
 {
   cout << "Received TF Guess:\n" << stamped_transform << endl;
 
   if ( tf_queue_ptr->size () >= *TF_QUEUE_SIZE ) { tf_queue_ptr->erase ( tf_queue_ptr->begin ()->first ); }
-  tf::StampedTransform temp_tf;
-  tf::transformStampedMsgToTF (stamped_transform, temp_tf);
-
   tf_queue_ptr->insert ( make_pair<uint, Eigen::Matrix4f>( (uint) stamped_transform.header.seq, tf2d_to_matrix4f ( stamped_transform ) ) );
+}
+
+
+void cloud_and_pose_callback (const kitti_localization::CloudAndPose& cap_msg)
+{
+  printf("Received %dth CAP message", cap_msg.seq);
+
+  pose_guess_callback ( cap_msg.init_guess );
+  pcl_callback ( boost::make_shared<sensor_msgs::PointCloud2> ( cap_msg.point_cloud2 ) );
+
+  printf("TF_QUEUE current size: %d\n\n", tf_queue_ptr->size ());
 }
 
 
@@ -195,8 +197,8 @@ int main(int argc, char** argv)
   ros::init ( argc, argv, "sub_pcl" );
   ros::NodeHandle nh;
   initGlobals ();
-  ros::Subscriber subPoseGuess = nh.subscribe<geometry_msgs::TransformStamped> ( "/init_guess", 1, &pose_guess_callback );
-  ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ( "/point_cloud2", 1, &pcl_callback );
-
+  //ros::Subscriber subPoseGuess = nh.subscribe<geometry_msgs::TransformStamped> ( "/init_guess", 1, &pose_guess_callback );
+  //ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ( "/point_cloud2", 1, &pcl_callback );
+  ros::Subscriber subCloudAndPose = nh.subscribe ( "/CAP", 1, cloud_and_pose_callback );
   ros::spin ();
 }

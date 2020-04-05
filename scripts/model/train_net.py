@@ -177,8 +177,8 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), save_path)
                 print("weights saved to", save_path)
 
-        valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
-                          dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0)) for valset in valsets]
+        valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"], pin_memory=True) if LOAD_GRAPH else \
+                          dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0), pin_memory=True) for valset in valsets]
 
         device = torch.device('cuda:0' if torch.cuda.is_available() and args.gpu_first else 'cpu')
 
@@ -211,8 +211,8 @@ if __name__ == '__main__':
             # train on all training sequences
             for seq in train_seqences:
                 trainset = Kitti(seq, root=args.data_dir)
-                trainloader = gDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
-                    dDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=PadCollate(dim=0))
+                trainloader = gDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=False, follow_batch=['x_s', "x_t"], pin_memor=True) if LOAD_GRAPH else \
+                    dDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=PadCollate(dim=0), pin_memor=True)
 
                 epoch_loss, mse_epoch_loss, x_epoch_loss, rot_epoch_loss = train(model, epoch, trainloader, optimizer,
                                                                                  criterion_x, criterion_rot)

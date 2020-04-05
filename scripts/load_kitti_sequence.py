@@ -16,6 +16,7 @@ from model.utils import ComposeAdapt
 from collections import OrderedDict
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2, PointField
+from kitti_localization.msg import CloudAndPose
 from std_msgs.msg import Header
 import argparse
 from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale, Compose
@@ -37,17 +38,18 @@ print('Argument list to program')
 print('\n'.join(['--{0} {1}'.format(arg, args_dict[arg]) for arg in args_dict]))
 print('=' * 30)
 
-sleep_rate = 1.
-queue_size = 2
+sleep_rate = 200
+queue_size = 10
 LOAD_GRAPH = False
 
 
 class CloudPublishNode:
     def __init__(self, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
         rospy.init_node(node_name)
-        self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
+        #self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
         #self.transform_broadcaster = tf2_ros.TransformBroadcaster()
-        self.tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)
+        #self.tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)
+        self.cap_pub = rospy.Publisher("CAP", CloudAndPose, queue_size=queue_size)
         self.rate = rospy.Rate(sleep_rate)
         self.header = Header()
         self.header.frame_id = global_tf_name
@@ -78,7 +80,7 @@ class CloudPublishNode:
         pose = pose.detach().numpy()
         return pose[0, :3], pose[0, 3:]
 
-    def publish_tfs(self, translation, quaternion, header):
+    def tq2tf_msg(self, translation, quaternion, header):
         t = TransformStamped()
         t.header = header
         t.child_frame_id = self.child_tf_name
@@ -90,7 +92,8 @@ class CloudPublishNode:
         t.transform.rotation.z = quaternion[2]
         t.transform.rotation.w = quaternion[3]
         #self.transform_broadcaster.sendTransform(t)
-        self.tf_pub.publish(t)
+        #self.tf_pub.publish(t)
+        return t
 
     def serve(self, idx):
         current_cloud = self.dataset.get_velo(idx)
@@ -104,10 +107,14 @@ class CloudPublishNode:
 
         self.header.seq = idx
         self.header.stamp = rospy.Time.from_sec(self.dataset.timestamps[idx].total_seconds())
-        pc2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
-        self.publish_tfs(tr, quat, self.header)
-        self.cloud_pub.publish(pc2)
-        rospy.logdebug(pc2)
+
+        cap_msg = CloudAndPose()
+        cap_msg.seq = idx
+        cap_msg.point_cloud2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
+        cap_msg.init_guess = self.tq2tf_msg(tr, quat, self.header)
+        #self.cloud_pub.publish(pc2)
+        self.cap_pub.publish(cap_msg)
+        rospy.logdebug(cap_msg)
         self.rate.sleep()
 
     def __call__(self):
@@ -115,6 +122,7 @@ class CloudPublishNode:
             if rospy.is_shutdown():
                 break
             self.serve(idx)
+            print(idx)
         rospy.spin()
 
 
