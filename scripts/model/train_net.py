@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from dataloader import KittiGraph, KittiStandard
 from point_net import Net
-from utils import save_pose_predictions, AverageMeter, dDataLoaderX, gDataLoaderX, PadCollate, l2reg, ComposeAdapt
+from utils import save_pose_predictions, AverageMeter, dDataLoaderX, gDataLoaderX, PadCollate, l2reg, ComposeAdapt, pose_error, val7_to_matrix
 import tqdm
 import re
 from collections import OrderedDict
@@ -86,10 +86,12 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
     temp_mse_loss = AverageMeter()
     temp_x_loss = AverageMeter()
     temp_rot_loss = AverageMeter()
+    trans_error_meter = AverageMeter()
+    rot_error_meter = AverageMeter()
 
     with tqdm.tqdm(len(train_loader)) as pbar:
         for data in train_loader:
-            data = data.to(device) if not isinstance(data, tuple) else tuple([d.to(device) for d in data])
+            data = data.to(device) if not isinstance(data, (tuple, list)) else tuple([d.to(device) for d in data])
             optimizer.zero_grad()
             # loss = F.nll_loss(model(data), data.y)
             gt_poses = data.y.reshape(train_loader.batch_size, -1).float() if LOAD_GRAPH else data[-1].float()
@@ -105,6 +107,8 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
                 loss = L2_LAMBDA * l2reg(model) + mse_loss + model.sx + model.sq
                 loss.backward()
                 optimizer.step()
+
+                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(data[-1]), val7_to_matrix(est.cpu().detach().numpy())))) for est in pred_pose], axis=0)
                 temp_loss.update(loss.item())
                 temp_mse_loss.update(mse_loss.item())
                 temp_rot_loss.update(rot_loss.item())
@@ -114,10 +118,14 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
                                              rot_loss=rot_loss.item(),
                                              x_loss=x_loss.item(),
                                              sx=float(model.sx.detach().cpu()),
-                                             sq=float(model.sq.detach().cpu())))
+                                             sq=float(model.sq.detach().cpu()),
+                                             pose_error_avg=list(pose_error_avg)))
+                trans_error_meter.update(pose_error_avg[0])
+                rot_error_meter.update(pose_error_avg[1])
             except RuntimeError as e:
                 print(gt_poses.shape, e)
             pbar.update(1)
+    print(f"Translation Error: {trans_error_meter.avg:.4f}\tRot Error: {rot_error_meter.avg}")
     return temp_loss.avg, temp_mse_loss.avg, temp_x_loss.avg, temp_rot_loss.avg
 
 
@@ -127,11 +135,13 @@ def val(model, loader, criterion_x, criterion_rot):
     temp_loss = AverageMeter()
     temp_x_loss = AverageMeter()
     temp_rot_loss = AverageMeter()
+    trans_error_meter = AverageMeter()
+    rot_error_meter = AverageMeter()
 
     pred_poses = []
     with tqdm.tqdm(len(loader)) as pbar:
         for data in loader:
-            data = data.to(device) if not isinstance(data, tuple) else tuple([d.to(device) for d in data])
+            data = data.to(device) if not isinstance(data, (tuple, list)) else tuple([d.to(device) for d in data])
             # loss = F.nll_loss(model(data), data.y)
             gt_poses = data.y.reshape(loader.batch_size, -1).float() if LOAD_GRAPH else data[-1].float()
             pred_pose = model(data)
@@ -143,11 +153,17 @@ def val(model, loader, criterion_x, criterion_rot):
             temp_x_loss.update(x_loss.item())
             pbar.update(1)
             pred_poses += [pred_pose.cpu().numpy()]
+            pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(data[-1]), val7_to_matrix(est.cpu().detach().numpy())))) for est in pred_pose], axis=0)
+
             pbar.set_postfix(OrderedDict(mse_loss=loss.item(),
                                          rot_loss=rot_loss.item(),
                                          x_loss=x_loss.item(),
                                          sx=float(model.sx.detach().cpu()),
-                                         sq=float(model.sq.detach().cpu())))
+                                         sq=float(model.sq.detach().cpu(),
+                                         pose_error_avg=list(pose_error_avg))))
+            trans_error_meter.update(pose_error_avg[0])
+            rot_error_meter.update(pose_error_avg[1])
+    print(f"Translation Error: {trans_error_meter.avg:.4f}\tRot Error: {rot_error_meter.avg}")
     return temp_loss.avg, pred_poses, temp_x_loss.avg, temp_rot_loss.avg
 
 
@@ -177,8 +193,8 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), save_path)
                 print("weights saved to", save_path)
 
-        valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"], pin_memory=True) if LOAD_GRAPH else \
-                          dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0), pin_memory=True) for valset in valsets]
+        valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
+                          dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0)) for valset in valsets]
 
         device = torch.device('cuda:0' if torch.cuda.is_available() and args.gpu_first else 'cpu')
 
@@ -211,8 +227,8 @@ if __name__ == '__main__':
             # train on all training sequences
             for seq in train_seqences:
                 trainset = Kitti(seq, root=args.data_dir)
-                trainloader = gDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=False, follow_batch=['x_s', "x_t"], pin_memor=True) if LOAD_GRAPH else \
-                    dDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=PadCollate(dim=0), pin_memor=True)
+                trainloader = gDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
+                    dDataLoaderX(trainset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=PadCollate(dim=0))
 
                 epoch_loss, mse_epoch_loss, x_epoch_loss, rot_epoch_loss = train(model, epoch, trainloader, optimizer,
                                                                                  criterion_x, criterion_rot)

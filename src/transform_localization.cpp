@@ -12,6 +12,7 @@
 #include <tf/transform_broadcaster.h>
 #include <tf/transform_listener.h>
 #include <tf2_eigen/tf2_eigen.h>
+#include <Eigen/Dense>
 #include <geometry_msgs/TransformStamped.h>
 #include <kitti_localization/CloudAndPose.h>
 #include <iostream>
@@ -21,24 +22,53 @@
 #include <climits>
 #include <boost/shared_ptr.hpp>
 #include <bits/stdc++.h>
+#include <pthread.h>
 
 typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
 using KdTreeReciprocal = pcl::search::KdTree<pcl::PointXYZ>;
 using KdTreeReciprocalPtr = typename KdTreeReciprocal::Ptr;
 using namespace std;
 
-PointCloud::Ptr cloud_ptr ( new PointCloud );
 KdTreeReciprocalPtr target_tree ( new KdTreeReciprocal );
 map<uint, Eigen::Matrix4f> tf_queue;
 map<uint, PointCloud::Ptr> pc_queue;
-uint *QUEUE_SIZE ( new uint ) ;
+uint QUEUE_SIZE;
 boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
 //tf::TransformListener tf_listener;
 
 
+class AverageMeter
+{
+public:
+  double num;
+  int cnt;
+  double avg;
+  double sum;
+
+  AverageMeter ();
+  void reset ();
+  void update (double _num);
+};
+
+AverageMeter::AverageMeter () { reset ();}
+void AverageMeter::reset () { num = 0; cnt = 0; avg = 0; sum = 0;}
+void AverageMeter::update (double _num)
+{
+  num = _num;
+  sum += num;
+  cnt++;
+  avg = sum / cnt;
+}
+
+
+void *f(void *ptr)
+{
+  while ( true ) ros::spinOnce ();
+}
+
 void initGlobals()
 {
-  *QUEUE_SIZE = 20; // must larger than 2
+  QUEUE_SIZE = 30; // must larger than 2
   br_ptr.reset( new tf::TransformBroadcaster );
 }
 
@@ -62,7 +92,7 @@ Eigen::Matrix4f localize (
   ndt.setTransformationEpsilon ( 0.01 );
   ndt.setStepSize ( 0.1 );
   ndt.setResolution ( 1.5 );
-  ndt.setMaximumIterations ( 20 );
+  ndt.setMaximumIterations ( 40 );
   ndt.setInputSource ( filtered_cloud_ptr );
   ndt.setInputTarget ( target_cloud_ptr );
   ndt.setSearchMethodTarget ( target_tree );
@@ -124,12 +154,16 @@ void broadcast_transform (Eigen::Matrix4f Tmf, uint s)
 
 void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
 {
+  PointCloud::Ptr cloud_ptr ( new PointCloud );
   pcl::fromROSMsg ( *input, *cloud_ptr );
-  cout << "Received Pointcloud of size " << cloud_ptr->size () << endl;
+  //cout << "Received Pointcloud of size " << cloud_ptr->size () << endl;
 
-  if ( pc_queue.size () >= *QUEUE_SIZE ) { pc_queue.erase (pc_queue.begin ()->first ); }
+  if ( pc_queue.size () >= QUEUE_SIZE ) { pc_queue.erase (pc_queue.begin ()->first ); cout << "erased key: " << pc_queue.begin ()->first << "from pc_queue" << endl; }
   //pc_queue->insert ( make_pair<uint, PointCloud::Ptr> ( (uint) input->header.seq, cloud_ptr ) );
-  pc_queue[(uint) input->header.seq] = cloud_ptr;
+  // pc_queue[(uint) input->header.seq] = cloud_ptr;
+  auto i = (uint) input->header.seq;
+  pc_queue.insert ( make_pair ( i, cloud_ptr ) );
+
   /*if ( *seq == 0 ) pcl::copyPointCloud ( *cloud_ptr, *target_cloud_ptr );
   else
   {
@@ -149,13 +183,6 @@ void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
 
 Eigen::Matrix4f tf2d_to_matrix4f (const geometry_msgs::TransformStamped transform)
 {
-  /*Eigen::Translation3f tl_btol(transform.getOrigin().getX(), transform.getOrigin().getY(), transform.getOrigin().getZ());
-  double roll, pitch, yaw;
-  tf::Matrix3x3(transform.getRotation()).getEulerYPR(yaw, pitch, roll);
-  Eigen::AngleAxisf rot_x_btol(roll, Eigen::Vector3f::UnitX());
-  Eigen::AngleAxisf rot_y_btol(pitch, Eigen::Vector3f::UnitY());
-  Eigen::AngleAxisf rot_z_btol(yaw, Eigen::Vector3f::UnitZ());
-  return (tl_btol * rot_z_btol * rot_y_btol * rot_x_btol).matrix().inverse();*/
   Eigen::Affine3d tf3d = tf2::transformToEigen ( transform );
   Eigen::Affine3f tf3f = tf3d.cast<float> ();
   return tf3f.matrix ();
@@ -164,21 +191,21 @@ Eigen::Matrix4f tf2d_to_matrix4f (const geometry_msgs::TransformStamped transfor
 
 void pose_guess_callback ( const geometry_msgs::TransformStamped stamped_transform )
 {
-  cout << "Received TF Guess:\n" << stamped_transform << endl;
-
-  if ( tf_queue.size () >= *QUEUE_SIZE ) { tf_queue.erase ( tf_queue.begin ()->first ); }
+  //cout << "Received TF Guess:\n" << stamped_transform << endl;
+  if ( tf_queue.size () >= QUEUE_SIZE ) { tf_queue.erase ( tf_queue.begin ()->first );}
   tf_queue.insert ( make_pair<uint, Eigen::Matrix4f>( (uint) stamped_transform.header.seq, tf2d_to_matrix4f ( stamped_transform ) ) );
 }
 
 
 void cloud_and_pose_callback (const kitti_localization::CloudAndPose& cap_msg)
 {
-  printf("Received %dth CAP message", cap_msg.seq);
-
+  printf("Received %dth CAP message\n", cap_msg.seq);
   pose_guess_callback ( cap_msg.init_guess );
   pcl_callback ( boost::make_shared<sensor_msgs::PointCloud2> ( cap_msg.point_cloud2 ) );
 
-  printf("TF_QUEUE current size: %d\n\n", tf_queue.size ());
+  //cout << "insert to tf_queue\t " << tf_queue.end()->first << ": " << tf_queue.end()->second << endl;
+  //cout << "insert to pc_queue\t " << pc_queue.end()->first << ": " << pc_queue.end()->second << endl;
+  //printf("=============================================\n");
 }
 
 
@@ -191,32 +218,43 @@ int main(int argc, char** argv)
   //ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ( "/point_cloud2", 1, &pcl_callback );
   ros::Subscriber subCloudAndPose = nh.subscribe ( "/CAP", 1, cloud_and_pose_callback );
   ros::Rate rate ( 1. );
+  AverageMeter spend_time_meter;
+
+  pthread_t pid;
+  pthread_create ( &pid, NULL, f, NULL );
 
   uint seq = 1;
   while ( nh.ok () )
   {
+
     auto it = pc_queue.find ( seq );
     // wait until received at least 2 frames data from publisher
     if ( it != pc_queue.end () && pc_queue.size () > 1 && tf_queue.size () > 1 )
     {
+      ros::Time begin = ros::Time::now ();
+      cout << "\n\n=======================================" << endl;
       PointCloud::Ptr target_cloud_ptr = it->second;
       auto prev_it = pc_queue.find ( seq - 1 );
-      if ( prev_it == pc_queue.end () ) { cout << "Cannot find 0th frame pointcloud, exit." << endl; return -1; }
+      if ( prev_it == pc_queue.end () ) { cout << "Cannot find previous frame pointcloud, exit." << endl; return -1; }
       PointCloud::Ptr source_cloud_ptr = prev_it->second;
 
       auto it_tf = tf_queue.find ( seq );
-      if ( it_tf == tf_queue.end () ) { cout << "Cannot find 0th frame init_guss, exit." << endl; return -1; }
+      if ( it_tf == tf_queue.end () ) { cout << "Cannot find previous frame init_guess, exit." << endl; return -1; }
       auto init_guess = it_tf->second;
 
       auto transformMatrix = localize ( target_cloud_ptr, source_cloud_ptr, init_guess );
-      cout << "NDT result: \n" << transformMatrix << endl;
+      cout << "NDT result: \n" << transformMatrix << "\n==============================" << endl;
 
-      broadcast_transform ( transformMatrix , seq );
+      broadcast_transform ( transformMatrix, seq );
+
+      ros::Duration duration = ros::Time::now () - begin;
+      spend_time_meter.update ( duration.toSec () );
+      printf("NDT spent %f sec.", spend_time_meter.avg );
       seq++;
     }
-    // rate.sleep ();
+    //rate.sleep ();
     // since ndt iteration definitely takes more time than receiving data.
   }
-  ros::spin ();
+
   return 0;
 }

@@ -24,12 +24,11 @@ def save_pose_predictions(init_pose, pred_poses: list, save_path):
         for i, batch_pose in enumerate(pred_poses):
             for pose in batch_pose:
                 rot = Rotation.from_quat(pose[3:]).as_dcm()
-                absolute_rot = np.dot(absolute_pose[:3, :3].T, rot)
+                absolute_rot = np.dot(np.linalg.inv(absolute_pose[:3, :3]), rot)
                 absolute_trans = pose[:3] + absolute_pose[:3, -1]
                 absolute_pose = np.hstack([absolute_rot, absolute_trans.reshape(-1, 1)])
                 pose_dcm_str = map(lambda x: f"{x:4e}", list(absolute_pose.reshape(-1)))
                 f.write(" ".join(tuple(pose_dcm_str)) + "\n")
-
         #print("poses writed to", save_path)
 
 
@@ -178,3 +177,40 @@ class ComposeAdapt:
     def __repr__(self):
         args = ['    {}: {},'.format(k, t) for k, t in self.transforms.items()]
         return '{}([\n{}\n])'.format(self.__class__.__name__, '\n'.join(args))
+
+
+def pose_error(gt_mat, est_mat):
+    if gt_mat.shape[0] == 3:
+        t = gt_mat
+        gt_mat = np.eye(4)
+        gt_mat[:3, :] = t
+    if est_mat.shape[0] == 3:
+        t = est_mat
+        est_mat = np.eye(4)
+        est_mat[:3, :] = t
+
+    pe = np.dot(np.linalg.inv(est_mat), gt_mat)
+    return translation_error(pe), rotation_error(pe)
+
+
+def rotation_error(pose_error):
+    a = pose_error[0, 0]
+    b = pose_error[1, 1]
+    c = pose_error[2, 2]
+    d = 0.5 * (a + b + c - 1.0)
+    return np.arccos(max(min(d, 1), -1))
+
+
+def translation_error(pose_error):
+    dx = pose_error[0, 3]
+    dy = pose_error[1, 3]
+    dz = pose_error[2, 3]
+    return np.sqrt(dx**2 + dy**2 + dz**2)
+
+
+def val7_to_matrix(pose_vect):
+    translation = pose_vect[:3]
+    quat = pose_vect[3:]
+    mat = np.eye(4)
+    mat[:3, :3] = Rotation.from_quat(quat).as_matrix()
+    return mat

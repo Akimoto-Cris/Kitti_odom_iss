@@ -9,7 +9,7 @@ set weight_decay=0.00005
 set dropout=0.5
 set num_workers=4
 set grid_size=3
-set model_path=weights_dropout_quat_balance_reg_rt\ckpt_epoch=2_1thfold_valxloss=1.188.pth
+set model_path=weights_dropout_quat_balance_reg_rt_1\ckpt_epoch=0_1thfold_valxloss=0.952.pth
 set save_dir=weights_dropout_quat_balance_reg_rt
 set reg_lambda=0.005
 set save_strategy=valxloss
