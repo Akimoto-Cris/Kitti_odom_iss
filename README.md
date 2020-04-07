@@ -2,13 +2,14 @@
 
 1. 我的环境：Ubuntu 18.04 VM Ware 虚拟机
 2. 按照 ros 官网指南搭建好 `~/catkin_ws` 下的工作空间
-3. `cd ~/catkin_ws/src/`，将本 git repo 全部内容放在当前路径中
-4. 下载 kitti 数据集： http://www.cvlibs.net/datasets/kitti/eval_odometry.php。只需要下载三个文件：
+3. `cd ~/catkin_ws/src/ && mkdir kitti_localization && cd kitti_localization`
+4. 将本 git repo 全部内容放在当前路径中
+5. 下载 kitti 数据集： http://www.cvlibs.net/datasets/kitti/eval_odometry.php。只需要下载三个文件：
 
     - (velodyne laser data, 80 GB)
     - (calibration files, 1 MB)
     - ground truth poses (4 MB)
-5. 下载的三个压缩包在同一目录下解压，解压后的目录结构应该是：
+6. 下载的三个压缩包在同一目录下解压，解压后的目录结构应该是：
 ```
 dataset
 ├── poses
