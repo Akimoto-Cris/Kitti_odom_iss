@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   geometry_msgs
   message_generation
+  visualization_msgs
   tf
 )
 
@@ -78,6 +79,7 @@ generate_messages(
   sensor_msgs
   std_msgs
   geometry_msgs
+  visualization_msgs
 )
 
 ################################################

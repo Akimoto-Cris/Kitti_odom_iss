@@ -70,8 +70,8 @@ class CloudPublishNode:
             print("loaded weights from", args.model_path)
         self.model.eval()
 
-        self.absolute_gt_pose = np.eye(4)
         self.absolute_est_pose = np.eye(4)
+        self.absolute_gt_pose = np.eye(4)
         self.infer_time_meter = AverageMeter()
 
         self.fields = [PointField('x', 0, PointField.FLOAT32, 1),
@@ -87,14 +87,13 @@ class CloudPublishNode:
         pose = self.model((source_cloud.unsqueeze(0), target_cloud.unsqueeze(0),
                           torch.tensor(len(source_cloud)).unsqueeze(0), torch.tensor(len(target_cloud)).unsqueeze(0)))
 
-        self.infer_time_meter.update((time.time() - begin) / 1000)
+        self.infer_time_meter.update(time.time() - begin)
         pose = pose.detach().numpy()
         return pose[0, :3], pose[0, 3:]
 
-    def update_absolute_pose(pose, which):
-        assert which in ["gt", "est"]
-        eval(f"self.absolute_{which}_pose")[:3, :3] = np.dot(np.linalg.inv(eval(f"self.absolute_{which}_pose")[:3, :3]), pose[:3, :3])
-        eval(f"self.absolute_{which}_pose")[:3, -1] += pose[:3, -1]
+    def update_absolute_pose(self, pose):
+        self.absolute_est_pose[:3, :3] = np.dot(self.absolute_est_pose[:3, :3], pose[:3, :3])
+        self.absolute_est_pose[:3, -1] += pose[:3, -1]
 
     def tq2tf_msg(self, translation, quaternion, header):
         t = TransformStamped()
@@ -126,7 +125,10 @@ class CloudPublishNode:
             tr, quat = self.estimate_pose(prev_cloud, current_cloud)
         gt_pose = self.dataset.poses[idx]
         est_mat = val7_to_matrix(np.concatenate([tr, quat]))
-        trans_error, rot_error = pose_error(gt_pose, self.absolute_est_pose)
+        self.update_absolute_pose(est_mat)
+        delta_gt_pose = np.dot(np.linalg.inv(self.absolute_gt_pose), gt_pose)
+        trans_error, rot_error = pose_error(delta_gt_pose, est_mat)
+        self.absolute_gt_pose = gt_pose
 
         self.header.seq = idx
         self.header.stamp = rospy.Time.from_sec(self.dataset.timestamps[idx].total_seconds())
@@ -141,16 +143,17 @@ class CloudPublishNode:
         self.tf_pub.publish(cap_msg.init_guess)
         self.gt_tf_pub.publish(gt_tf)
         self.cap_pub.publish(cap_msg)
+
+        print(f"[{idx}] inference spent: {self.infer_time_meter.avg:.2f} ms\t\t|"
+              f" Trans : {list(tr)}\t\t| GT Trans: {list(delta_gt_pose[:3, -1].reshape(3,))}\t\t|"
+              f" Trans error: {trans_error:.4f}\t\t| Rot error: {rot_error:.4f}")
         self.rate.sleep()
-        return trans_error, rot_error
 
     def __call__(self):
         for idx in range(len(self.dataset.poses)):
             if rospy.is_shutdown():
                 break
-            trans_error, rot_error = self.serve(idx)
-            print(f"[{idx}] inference spent: {self.infer_time_meter.avg:.2f} s\t|"
-                  f"\tTrans error: {trans_error:.4f}\t|\tRot error: {rot_error:.4f}")
+            self.serve(idx)
         rospy.spin()
 
 

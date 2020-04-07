@@ -14,6 +14,7 @@ import os.path as osp
 import random
 import torch
 import torch.nn as nn
+import numpy as np
 from dataloader import KittiGraph, KittiStandard
 from point_net import Net
 from utils import save_pose_predictions, AverageMeter, dDataLoaderX, gDataLoaderX, PadCollate, l2reg, ComposeAdapt, pose_error, val7_to_matrix
@@ -108,7 +109,7 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
                 loss.backward()
                 optimizer.step()
 
-                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(data[-1]), val7_to_matrix(est.cpu().detach().numpy())))) for est in pred_pose], axis=0)
+                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()), val7_to_matrix(est.squeeze().cpu().detach().numpy()))) for gt, est in zip(data[-1], pred_pose)]), 0)
                 temp_loss.update(loss.item())
                 temp_mse_loss.update(mse_loss.item())
                 temp_rot_loss.update(rot_loss.item())
@@ -153,14 +154,14 @@ def val(model, loader, criterion_x, criterion_rot):
             temp_x_loss.update(x_loss.item())
             pbar.update(1)
             pred_poses += [pred_pose.cpu().numpy()]
-            pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(data[-1]), val7_to_matrix(est.cpu().detach().numpy())))) for est in pred_pose], axis=0)
 
+            pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()), val7_to_matrix(est.squeeze().cpu().detach().numpy()))) for gt, est in zip(data[-1], pred_pose)]), 0)
             pbar.set_postfix(OrderedDict(mse_loss=loss.item(),
                                          rot_loss=rot_loss.item(),
                                          x_loss=x_loss.item(),
                                          sx=float(model.sx.detach().cpu()),
-                                         sq=float(model.sq.detach().cpu(),
-                                         pose_error_avg=list(pose_error_avg))))
+                                         sq=float(model.sq.detach().cpu()),
+                                         pose_error_avg=list(pose_error_avg)))
             trans_error_meter.update(pose_error_avg[0])
             rot_error_meter.update(pose_error_avg[1])
     print(f"Translation Error: {trans_error_meter.avg:.4f}\tRot Error: {rot_error_meter.avg}")
