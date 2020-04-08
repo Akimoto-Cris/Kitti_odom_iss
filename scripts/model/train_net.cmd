@@ -19,4 +19,4 @@ call conda activate torch
 call python train_net.py -d %datadir% --n_fold %n_fold% -b %batch_size% --lr %lr% -wd %weight_decay% --weights_dir %save_dir%^
      --dropout %dropout% --num_workers %num_workers% --epoch %epoch% -gs %grid_size% --model_pth %model_path%^
      --reg_lambda %reg_lambda% --save_strategy %save_strategy% --lr_decay %lr_decay% -rt %random_trans%
-     ::> %save_dir%\\train_log.txt
+     ::> %save_dir%\\train_log.txt ::uncommend if you want to save output to log file

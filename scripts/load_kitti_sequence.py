@@ -51,8 +51,8 @@ class CloudPublishNode:
         rospy.init_node(node_name)
         self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
         #self.transform_broadcaster = tf2_ros.TransformBroadcaster()
-        self.tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)
-        self.gt_tf_pub = rospy.Publisher("gt_" + tf_topic_name, TransformStamped, queue_size=queue_size)
+        self.delta_est_tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size) # for visualization
+        self.relative_gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)            # for visualization
         self.cap_pub = rospy.Publisher("CAP", CloudAndPose, queue_size=queue_size)
         self.rate = rospy.Rate(sleep_rate)
         self.header = Header()
@@ -140,8 +140,8 @@ class CloudPublishNode:
         gt_tf = self.mat2tf_msg(gt_pose, self.header)
 
         self.cloud_pub.publish(cap_msg.point_cloud2)
-        self.tf_pub.publish(cap_msg.init_guess)
-        self.gt_tf_pub.publish(gt_tf)
+        self.delta_est_tf_pub.publish(cap_msg.init_guess)   #TODO: modify to publish delta between pose and gt
+        self.relative_gt_tf_pub.publish(gt_tf)              #TODO: modify to publish gt pose relative to previous frame
         self.cap_pub.publish(cap_msg)
 
         print(f"[{idx}] inference spent: {self.infer_time_meter.avg:.2f} ms\t\t|"
@@ -158,5 +158,5 @@ class CloudPublishNode:
 
 
 if __name__ == '__main__':
-    CloudPublishNode("cloudPublisher", "point_cloud2", "init_guess",
+    CloudPublishNode("cloudPublisher", "point_cloud2", "delta_est_pose",
                      pykitti.odometry(args.data_dir, args.sequence), "map", "car")()

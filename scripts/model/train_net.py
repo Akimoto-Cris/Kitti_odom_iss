@@ -24,7 +24,6 @@ from collections import OrderedDict
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.transforms import GridSampling, RandomTranslate, NormalizeScale
 import argparse
-from ignite.engine import Events
 
 
 parser = argparse.ArgumentParser()
