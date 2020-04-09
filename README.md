@@ -1,6 +1,6 @@
 # 数据集下载
 ---
-下载 kitti 数据集： http://www.cvlibs.net/datasets/kitti/eval_odometry.php。只需要下载三个文件：
+下载 kitti 数据集： http://www.cvlibs.net/datasets/kitti/eval_odometry.php 。只需要下载三个文件：
 - (velodyne laser data, 80 GB)
 - (calibration files, 1 MB)
 - ground truth poses (4 MB)
