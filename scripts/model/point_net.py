@@ -56,11 +56,11 @@ class PointNetXX(torch.nn.Module):
     def __init__(self, act="Sigmoid", dropout=0.5):
         super(PointNetXX, self).__init__()
 
-        self.sa1_module = SAModule(0.5, 0.2, MLP([1 + 3, 64, 128]))
-        self.sa2_module = SAModule(0.25, 0.4, MLP([128 + 3, 128, 256]))
-        self.sa3_module = GlobalSAModule(MLP([256 + 3, 512]))
+        self.sa1_module = SAModule(0.5, 0.1, MLP([1 + 3, 64, 128]))     #SAModule(0.5, 0.2, MLP([1 + 3, 64, 128]))
+        self.sa2_module = SAModule(0.5, 0.3, MLP([128 + 3, 256, 512]))     #SAModule(0.25, 0.4, MLP([128 + 3, 128, 256]))
+        self.sa3_module = GlobalSAModule(MLP([512 + 3, 1024]))       #GlobalSAModule(MLP([256 + 3, 512]))
 
-        self.lin1 = Lin(512, 256)
+        self.lin1 = Lin(1024, 256)
         self.lin2 = Lin(256, 64)
 
         self.act = eval(act)()

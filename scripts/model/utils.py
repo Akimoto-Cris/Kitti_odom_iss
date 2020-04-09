@@ -201,6 +201,7 @@ def rotation_error(pose_error):
     return np.arccos(max(min(d, 1), -1))
 
 
+# TODO: debug all-zero bug
 def translation_error(pose_error):
     dx = pose_error[0, 3]
     dy = pose_error[1, 3]

@@ -56,6 +56,7 @@ __NOTE__: ${CUDA} 为 cpu, cu92, cu100 或 cu101，视 cuda 安装版本而定�
 2. 按照 ros 官网指南搭建好 `~/catkin_ws` 下的工作空间
 3. `cd ~/catkin_ws/src/ && mkdir kitti_localization && cd kitti_localization`
 4. 将本 git repo 全部内容放在当前路径中
+5. 最好不用 anaconda，最好用原生 python3.6.9 环境
 
 ## 编译
 
@@ -77,4 +78,8 @@ Solution: 参考 https://blog.csdn.net/qq_36501182/article/details/79971570
 
 ## 运行 python 脚本时 No module named 'tf2_ros'
 
-Solution: 请向我要 tf 源码，在 `catkin_ws` 下重新编译 （一般不会遇到这个问题）
+Solution: 参考 https://answers.ros.org/question/326226/importerror-dynamic-module-does-not-define-module-export-function-pyinit__tf2/
+
+## 运行 python 脚本时 no module named 'em'
+
+Solution: 参考 https://blog.csdn.net/wawayu_0/article/details/79460043

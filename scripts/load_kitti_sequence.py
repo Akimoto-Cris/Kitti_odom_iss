@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import os.path as osp
 import time
+import tf
 
 
 parser = argparse.ArgumentParser()
@@ -50,9 +51,9 @@ class CloudPublishNode:
     def __init__(self, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
         rospy.init_node(node_name)
         self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
-        #self.transform_broadcaster = tf2_ros.TransformBroadcaster()
-        self.delta_est_tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size) # for visualization
-        self.relative_gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)            # for visualization
+        self.transform_broadcaster = tf.TransformBroadcaster()
+        self.est_tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)             # for visualization
+        self.gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)            # for visualization
         self.cap_pub = rospy.Publisher("CAP", CloudAndPose, queue_size=queue_size)
         self.rate = rospy.Rate(sleep_rate)
         self.header = Header()
@@ -70,8 +71,8 @@ class CloudPublishNode:
             print("loaded weights from", args.model_path)
         self.model.eval()
 
-        self.absolute_est_pose = np.eye(4)
         self.absolute_gt_pose = np.eye(4)
+        self.absolute_est_pose = np.eye(4)
         self.infer_time_meter = AverageMeter()
 
         self.fields = [PointField('x', 0, PointField.FLOAT32, 1),
@@ -90,10 +91,6 @@ class CloudPublishNode:
         self.infer_time_meter.update(time.time() - begin)
         pose = pose.detach().numpy()
         return pose[0, :3], pose[0, 3:]
-
-    def update_absolute_pose(self, pose):
-        self.absolute_est_pose[:3, :3] = np.dot(self.absolute_est_pose[:3, :3], pose[:3, :3])
-        self.absolute_est_pose[:3, -1] += pose[:3, -1]
 
     def tq2tf_msg(self, translation, quaternion, header):
         t = TransformStamped()
@@ -125,10 +122,9 @@ class CloudPublishNode:
             tr, quat = self.estimate_pose(prev_cloud, current_cloud)
         gt_pose = self.dataset.poses[idx]
         est_mat = val7_to_matrix(np.concatenate([tr, quat]))
-        self.update_absolute_pose(est_mat)
         delta_gt_pose = np.dot(np.linalg.inv(self.absolute_gt_pose), gt_pose)
-        trans_error, rot_error = pose_error(delta_gt_pose, est_mat)
         self.absolute_gt_pose = gt_pose
+        trans_error, rot_error = pose_error(delta_gt_pose, est_mat)
 
         self.header.seq = idx
         self.header.stamp = rospy.Time.from_sec(self.dataset.timestamps[idx].total_seconds())
@@ -137,15 +133,18 @@ class CloudPublishNode:
         cap_msg.point_cloud2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
         cap_msg.init_guess = self.tq2tf_msg(tr, quat, self.header)
 
+        self.absolute_est_pose[:3, :3] = np.dot(self.absolute_est_pose[:3, :3], est_mat[:3, :3])
+        self.absolute_est_pose[:3, -1] += est_mat[:3, -1]
+
         gt_tf = self.mat2tf_msg(gt_pose, self.header)
 
         self.cloud_pub.publish(cap_msg.point_cloud2)
-        self.delta_est_tf_pub.publish(cap_msg.init_guess)   #TODO: modify to publish delta between pose and gt
-        self.relative_gt_tf_pub.publish(gt_tf)              #TODO: modify to publish gt pose relative to previous frame
+        self.est_tf_pub.publish(self.mat2tf_msg(self.absolute_est_pose, self.header))
+        self.gt_tf_pub.publish(gt_tf)
         self.cap_pub.publish(cap_msg)
 
-        print(f"[{idx}] inference spent: {self.infer_time_meter.avg:.2f} ms\t\t|"
-              f" Trans : {list(tr)}\t\t| GT Trans: {list(delta_gt_pose[:3, -1].reshape(3,))}\t\t|"
+        print(f"[{idx}] inference spent: {self.infer_time_meter.avg:.2f} ms\t\t|" \
+              f" Trans : {list(tr)}\t\t| GT Trans: {list(delta_gt_pose[:3, -1].reshape(3,))}\t\t|" \
               f" Trans error: {trans_error:.4f}\t\t| Rot error: {rot_error:.4f}")
         self.rate.sleep()
 
@@ -158,5 +157,4 @@ class CloudPublishNode:
 
 
 if __name__ == '__main__':
-    CloudPublishNode("cloudPublisher", "point_cloud2", "delta_est_pose",
-                     pykitti.odometry(args.data_dir, args.sequence), "map", "car")()
+    CloudPublishNode("cloudPublisher", "point_cloud2", "est_pose", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()
