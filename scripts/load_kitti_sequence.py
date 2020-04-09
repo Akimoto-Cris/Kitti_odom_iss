@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
 """
@@ -9,6 +9,7 @@
 @Software: PyCharm
 -----------------
 """
+
 import pykitti
 import rospy
 from model.point_net import Net
@@ -143,9 +144,8 @@ class CloudPublishNode:
         self.gt_tf_pub.publish(gt_tf)
         self.cap_pub.publish(cap_msg)
 
-        print(f"[{idx}] inference spent: {self.infer_time_meter.avg:.2f} ms\t\t|" \
-              f" Trans : {list(tr)}\t\t| GT Trans: {list(delta_gt_pose[:3, -1].reshape(3,))}\t\t|" \
-              f" Trans error: {trans_error:.4f}\t\t| Rot error: {rot_error:.4f}")
+        print("[{}] inference spent: {:.2f} ms\t\t| Trans : {}\t\t| GT Trans: {}\t\t| Trans error: {:.4f}\t\t| "
+              "Rot error: {:.4f}".format(idx, self.infer_time_meter.avg, list(tr), list(delta_gt_pose[:3, -1].reshape(3,)), trans_error, rot_error))
         self.rate.sleep()
 
     def __call__(self):
@@ -157,4 +157,5 @@ class CloudPublishNode:
 
 
 if __name__ == '__main__':
+
     CloudPublishNode("cloudPublisher", "point_cloud2", "est_pose", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()
