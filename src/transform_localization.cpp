@@ -34,7 +34,9 @@ map<uint, Eigen::Matrix4f> tf_queue;
 map<uint, PointCloud::Ptr> pc_queue;
 uint QUEUE_SIZE;
 boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
-//tf::TransformListener tf_listener;
+//boost::shared_ptr<tf::TransformListener> tf_listener_ptr = NULL;
+Eigen::Matrix4f absolute_pose = Eigen::Matrix4f::Identity ( 4, 4 );
+bool random_guess = false;
 
 
 class AverageMeter
@@ -63,7 +65,7 @@ void AverageMeter::update (double _num)
 
 void *f(void *ptr)
 {
-  while ( true ) ros::spinOnce ();
+  ros::spin();
 }
 
 void initGlobals()
@@ -76,30 +78,33 @@ void initGlobals()
 Eigen::Matrix4f localize (
   const PointCloud::Ptr& target_cloud_ptr,
   const PointCloud::Ptr& source_cloud_ptr,
-  const Eigen::Matrix4f init_guess)
+  Eigen::Matrix4f init_guess)
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
-  approximate_voxel_filter.setLeafSize ( 3, 3, 3 );
+  approximate_voxel_filter.setLeafSize ( 1 , 1, 3 );
   approximate_voxel_filter.setInputCloud ( source_cloud_ptr );
   approximate_voxel_filter.filter ( *filtered_cloud_ptr );
   target_tree->setInputCloud ( target_cloud_ptr );
 
   cout << "Filtered cloud contains " << filtered_cloud_ptr->size () << " data points" << endl;
+  cout << "Target Tree: " << target_tree << endl;
 
   pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
 
   ndt.setTransformationEpsilon ( 0.01 );
   ndt.setStepSize ( 0.1 );
-  ndt.setResolution ( 1.5 );
+  ndt.setResolution ( 0.5 );
   ndt.setMaximumIterations ( 40 );
+  ndt.setSearchMethodTarget ( target_tree );
   ndt.setInputSource ( filtered_cloud_ptr );
   ndt.setInputTarget ( target_cloud_ptr );
-  ndt.setSearchMethodTarget ( target_tree );
+
   /*init_guess << 1.,   0.0005,   -0.002,   -0.05,
                 -0.0005,  1.,   -0.001,   -0.03,
                 0.002, 0.001,       1.,   0.085,
                 0.,       0.,       0.,      1.;*/
+  if ( random_guess ) init_guess = Eigen::Matrix4f::Random ( 3, 4 ) * 0.5 + Eigen::Matrix4f::Constant ( 3, 4, 0.5 );
 
   PointCloud::Ptr output_cloud_ptr ( new PointCloud );
   ndt.align ( *output_cloud_ptr, init_guess );
@@ -125,8 +130,14 @@ void save_transform_to_file (const char* filename, const Eigen::Matrix4f& Tmf)
   fclose ( fp );
 }
 
+void accumulate_pose(Eigen::Matrix4f Tmf)
+{
+  absolute_pose.topLeftCorner ( 3, 3 ) = Tmf.topLeftCorner ( 3, 3 ) * absolute_pose.topLeftCorner ( 3, 3 );
+  absolute_pose.rightCols ( 1 ) += Tmf.rightCols ( 1 );
+}
 
-void broadcast_transform (Eigen::Matrix4f Tmf, uint s)
+
+geometry_msgs::TransformStamped broadcast_transform (Eigen::Matrix4f Tmf, uint s)
 {
   //Eigen::Matrix4d Tmd = transformMatrix.cast<double> ();
   tf::Matrix3x3 tf3d;
@@ -140,7 +151,7 @@ void broadcast_transform (Eigen::Matrix4f Tmf, uint s)
   transformStamped.header.stamp = ros::Time::now ();
   transformStamped.header.frame_id = "map";
   transformStamped.header.seq = s;
-  transformStamped.child_frame_id = "car";
+  transformStamped.child_frame_id = "ndt_car";
   transformStamped.transform.translation.x = Tmf(0, 3);
   transformStamped.transform.translation.y = Tmf(1, 3);
   transformStamped.transform.translation.z = Tmf(2, 3);
@@ -149,6 +160,7 @@ void broadcast_transform (Eigen::Matrix4f Tmf, uint s)
   transformStamped.transform.rotation.z = q.z ();
   transformStamped.transform.rotation.w = q.w ();
   br_ptr->sendTransform ( transformStamped );
+  return transformStamped;
 }
 
 
@@ -163,21 +175,6 @@ void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
   // pc_queue[(uint) input->header.seq] = cloud_ptr;
   auto i = (uint) input->header.seq;
   pc_queue.insert ( make_pair ( i, cloud_ptr ) );
-
-  /*if ( *seq == 0 ) pcl::copyPointCloud ( *cloud_ptr, *target_cloud_ptr );
-  else
-  {
-    source_cloud_ptr = cloud_ptr;
-    auto it = tf_queue->find ( *seq );
-    if (it != tf_queue->end () )
-    {
-      cout << "Matched seq in tf_queue: " << *seq << endl;
-      Eigen::Matrix4f transformMatrix = localize ( it->second );
-      broadcast_transform ( transformMatrix );
-      target_cloud_ptr = source_cloud_ptr;
-      tf_queue->erase ( it->first );
-    }
-  }*/
 }
 
 
@@ -216,6 +213,7 @@ int main(int argc, char** argv)
   initGlobals ();
   //ros::Subscriber subPoseGuess = nh.subscribe<geometry_msgs::TransformStamped> ( "/init_guess", 1, &pose_guess_callback );
   //ros::Subscriber subPCL = nh.subscribe<sensor_msgs::PointCloud2> ( "/point_cloud2", 1, &pcl_callback );
+  ros::Publisher ndt_pose_pub = nh.advertise<geometry_msgs::TransformStamped> ( "ndt_pose", 100 );
   ros::Subscriber subCloudAndPose = nh.subscribe ( "/CAP", 1, cloud_and_pose_callback );
   ros::Rate rate ( 1. );
   AverageMeter spend_time_meter;
@@ -223,10 +221,9 @@ int main(int argc, char** argv)
   pthread_t pid;
   pthread_create ( &pid, NULL, f, NULL );
 
-  uint seq = 1;
+  uint seq = 2;
   while ( nh.ok () )
   {
-
     auto it = pc_queue.find ( seq );
     // wait until received at least 2 frames data from publisher
     if ( it != pc_queue.end () && pc_queue.size () > 1 && tf_queue.size () > 1 )
@@ -245,11 +242,13 @@ int main(int argc, char** argv)
       auto transformMatrix = localize ( target_cloud_ptr, source_cloud_ptr, init_guess );
       cout << "NDT result: \n" << transformMatrix << "\n==============================" << endl;
 
-      broadcast_transform ( transformMatrix, seq );
+      accumulate_pose ( transformMatrix );
+      auto ndt_tf = broadcast_transform ( absolute_pose, seq );
+      ndt_pose_pub.publish(ndt_tf);
 
       ros::Duration duration = ros::Time::now () - begin;
       spend_time_meter.update ( duration.toSec () );
-      printf("NDT spent %f sec.", spend_time_meter.avg );
+      printf("[%d]\tNDT spent %f sec.", seq, spend_time_meter.avg );
       seq++;
     }
     //rate.sleep ();

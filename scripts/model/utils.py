@@ -193,19 +193,19 @@ def pose_error(gt_mat, est_mat):
     return translation_error(pe), rotation_error(pe)
 
 
-def rotation_error(pose_error):
-    a = pose_error[0, 0]
-    b = pose_error[1, 1]
-    c = pose_error[2, 2]
+def rotation_error(pe):
+    a = pe[0, 0]
+    b = pe[1, 1]
+    c = pe[2, 2]
     d = 0.5 * (a + b + c - 1.0)
     return np.arccos(max(min(d, 1), -1))
 
 
 # TODO: debug all-zero bug
-def translation_error(pose_error):
-    dx = pose_error[0, 3]
-    dy = pose_error[1, 3]
-    dz = pose_error[2, 3]
+def translation_error(pe):
+    dx = pe[0, 3]
+    dy = pe[1, 3]
+    dz = pe[2, 3]
     return np.sqrt(dx**2 + dy**2 + dz**2)
 
 

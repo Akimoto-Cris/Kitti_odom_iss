@@ -51,17 +51,76 @@ def MLP(channels, batch_norm=True):
         for i in range(1, len(channels))
     ])
 
+"""
+class PointNetXX(torch.nn.Module):
+    def __init__(self, act="Sigmoid", dropout=0.5):
+        super(PointNetXX, self).__init__()
+
+        self.sa1_module = SAModule(0.5, 0.2, MLP([1 + 3, 64, 128]))
+        self.sa2_module = SAModule(0.25, 0.4, MLP([128 + 3, 128, 256]))
+        self.sa3_module = GlobalSAModule(MLP([256 + 3, 512]))
+
+        self.lin1 = Lin(512, 256)
+
+        self.act = eval(act)()
+        self.dropout = Dropout(dropout)
+
+    def forward(self, x, pos, batch):
+        sa0_out = x, pos, batch
+        sa1_out = self.sa1_module(*sa0_out)
+        sa2_out = self.sa2_module(*sa1_out)
+        sa3_out = self.sa3_module(*sa2_out)
+        x, _, _ = sa3_out
+
+        x = self.lin1(x)
+        x = self.dropout(self.act(x))
+        return x
+
+
+class Net(torch.nn.Module):
+    def __init__(self, dof=6, act="Sigmoid", dropout=0.5, graph_input=False, transform=None):
+        super(Net, self).__init__()
+        self.graph_input = graph_input
+        self.transform = transform
+        self.pointnet = PointNetXX(act=act, dropout=dropout)
+        self.fcs = Seq(
+            eval(act)(), Lin(256 * 2, 100), Dropout(dropout),
+            eval(act)(), Lin(100, dof)
+        )
+        self.sx = torch.nn.Parameter(torch.tensor(0.), requires_grad=True)
+        self.sq = torch.nn.Parameter(torch.tensor(-2.5), requires_grad=True)
+
+        # for m in self.modules():
+        #     if isinstance(m, Lin):
+        #         torch.nn.init.kaiming_normal_(m.weight)
+
+    def forward(self, input):
+        if self.graph_input:
+            s_encode = self.pointnet(input.x_s, input.pos_s, input.x_s_batch.long())
+            t_encode = self.pointnet(input.x_t, input.pos_t, input.x_t_batch.long())
+        else:
+            graph_s, graph_t = x_pos_batch_to_pair_biggraph_pair(*input[:4])
+            graph_s = self.transform(graph_s, "train" if self.training else "test") if self.transform else graph_s
+            graph_t = self.transform(graph_t, "train" if self.training else "test") if self.transform else graph_t
+
+            s_encode = self.pointnet(graph_s.x, graph_s.pos, graph_s.batch)
+            t_encode = self.pointnet(graph_t.x, graph_t.pos, graph_t.batch)
+
+        fusion = torch.cat([s_encode, t_encode], dim=1)
+        return self.fcs(fusion)
+"""
+
 
 class PointNetXX(torch.nn.Module):
     def __init__(self, act="Sigmoid", dropout=0.5):
         super(PointNetXX, self).__init__()
 
-        self.sa1_module = SAModule(0.5, 0.1, MLP([1 + 3, 64, 128]))     #SAModule(0.5, 0.2, MLP([1 + 3, 64, 128]))
-        self.sa2_module = SAModule(0.5, 0.3, MLP([128 + 3, 256, 512]))     #SAModule(0.25, 0.4, MLP([128 + 3, 128, 256]))
-        self.sa3_module = GlobalSAModule(MLP([512 + 3, 1024]))       #GlobalSAModule(MLP([256 + 3, 512]))
+        self.sa1_module = SAModule(0.5, 0.2, MLP([1 + 3, 64, 128]))
+        self.sa2_module = SAModule(0.25, 0.4, MLP([128 + 3, 128, 256]))
+        self.sa3_module = GlobalSAModule(MLP([256 + 3, 512]))
 
-        self.lin1 = Lin(1024, 256)
-        self.lin2 = Lin(256, 64)
+        self.lin1 = Lin(512, 256)
+        self.lin2 = Lin(256, 64)   # newest 100
 
         self.act = eval(act)()
         self.dropout = Dropout(dropout)
@@ -91,10 +150,6 @@ class Net(torch.nn.Module):
         )
         self.sx = torch.nn.Parameter(torch.tensor(-2.5), requires_grad=True)
         self.sq = torch.nn.Parameter(torch.tensor(-2.5), requires_grad=True)
-
-        #for m in self.modules():
-        #    if isinstance(m, Lin):
-        #        torch.nn.init.kaiming_normal_(m.weight)
 
     def forward(self, input):
         if self.graph_input:

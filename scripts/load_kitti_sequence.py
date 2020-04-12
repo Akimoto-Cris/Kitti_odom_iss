@@ -27,7 +27,7 @@ import numpy as np
 import torch
 import os.path as osp
 import time
-import tf
+import tf2_ros
 
 
 parser = argparse.ArgumentParser()
@@ -35,7 +35,7 @@ parser.add_argument("-m", "--model_path")
 parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, default=3)
 parser.add_argument("--data_dir", type=str, default='/home/kartmann/share_folder/dataset')
 parser.add_argument("-s", "--sequence", type=str, default='00')
-parser.add_argument("-r", "--rate", default=1, type=float)
+parser.add_argument("-r", "--rate", default=0.5, type=float)
 parser.add_argument("--dropout", type=float, default=0.5)
 args = parser.parse_args()
 args_dict = vars(args)
@@ -48,11 +48,53 @@ queue_size = 10
 LOAD_GRAPH = False
 
 
+def inverse_pose(pose_mat):
+    pose_mat[:3, :3] = Rotation.from_matrix(pose_mat[:3, :3]).inv().as_matrix()
+    pose_mat[:3, -1] = -pose_mat[:3, -1]
+    return pose_mat
+
+
+def delta_poses(mat_1, mat_2):
+    ret = np.eye(4)[:3, :]
+    ret[:3, :3] = np.dot(mat_2[:3, :3].T, mat_1[:3, :3])
+    ret[:3, -1] = mat_1[:3, -1] - mat_2[:3, -1]
+    return ret
+
+
+def kitti2rvizaxis(mat, delete_z=True):
+    mat[[0, 2], -1] = mat[[2, 0], -1]
+    mat[[1, 2], :] = mat[[2, 1], :]
+    mat[:, [1, 2]] = mat[:, [2, 1]]
+    if delete_z:
+        mat[2, -1] = 0
+    return mat
+
+
+def trq2mat(tr, quat):
+    ret = np.eye(4)[:3, :]
+    ret[:3, :3] = Rotation.from_quat(quat).as_matrix()
+    ret[:3, -1] = tr
+    return ret
+
+
+def mat2trq(mat):
+    quat = Rotation.from_matrix(mat[:3, :3]).as_quat()
+    tr = mat[:3, -1]
+    return tr, quat
+
+
+def add_poses(mat_1, mat_2):    # mat_1 is added by mat_2
+    new = np.eye(4)[:3, :]
+    new[:3, :3] = np.dot(mat_2[:3, :3], mat_1[:3, :3])
+    new[:3, -1] = mat_1[:3, -1] + mat_2[:3, -1]
+    return new
+
+
 class CloudPublishNode:
     def __init__(self, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
         rospy.init_node(node_name)
         self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
-        self.transform_broadcaster = tf.TransformBroadcaster()
+        self.transform_broadcaster = tf2_ros.TransformBroadcaster()
         self.est_tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)             # for visualization
         self.gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)            # for visualization
         self.cap_pub = rospy.Publisher("CAP", CloudAndPose, queue_size=queue_size)
@@ -72,8 +114,8 @@ class CloudPublishNode:
             print("loaded weights from", args.model_path)
         self.model.eval()
 
-        self.absolute_gt_pose = np.eye(4)
-        self.absolute_est_pose = np.eye(4)
+        self.absolute_gt_pose = np.eye(4)[:3, :]
+        self.absolute_est_pose = np.eye(4)[:3, :]
         self.infer_time_meter = AverageMeter()
 
         self.fields = [PointField('x', 0, PointField.FLOAT32, 1),
@@ -93,10 +135,11 @@ class CloudPublishNode:
         pose = pose.detach().numpy()
         return pose[0, :3], pose[0, 3:]
 
-    def tq2tf_msg(self, translation, quaternion, header):
+    def tq2tf_msg(self, translation, quaternion, header, typ="gt"):
+        assert typ in ["gt", "est"]
         t = TransformStamped()
         t.header = header
-        t.child_frame_id = self.child_tf_name
+        t.child_frame_id = "{}_{}".format(typ, self.child_tf_name)
         t.transform.translation.x = translation[0]
         t.transform.translation.y = translation[1]
         t.transform.translation.z = translation[2]
@@ -104,15 +147,17 @@ class CloudPublishNode:
         t.transform.rotation.y = quaternion[1]
         t.transform.rotation.z = quaternion[2]
         t.transform.rotation.w = quaternion[3]
-        #self.tf_pub.publish(t)
         return t
 
-    def mat2tf_msg(self, transform_mat, header):
+    def mat2tf_msg(self, transform_mat, header, typ):
         translation = transform_mat[:3, -1]
         quat = Rotation.from_matrix(transform_mat[:3, :3]).as_quat()
-        return self.tq2tf_msg(translation, quat, header)
+        return self.tq2tf_msg(translation, quat, header, typ)
 
     def serve(self, idx):
+        self.header.seq = idx
+        self.header.stamp = rospy.Time.from_sec(self.dataset.timestamps[idx].total_seconds())
+
         current_cloud = self.dataset.get_velo(idx)
         if idx == 0:
             # guess 0 pose at first time frame
@@ -121,31 +166,39 @@ class CloudPublishNode:
             # estimate coarse pose relative to the previous frame with model
             prev_cloud = self.dataset.get_velo(idx - 1)
             tr, quat = self.estimate_pose(prev_cloud, current_cloud)
-        gt_pose = self.dataset.poses[idx]
-        est_mat = val7_to_matrix(np.concatenate([tr, quat]))
-        delta_gt_pose = np.dot(np.linalg.inv(self.absolute_gt_pose), gt_pose)
-        self.absolute_gt_pose = gt_pose
-        trans_error, rot_error = pose_error(delta_gt_pose, est_mat)
 
-        self.header.seq = idx
-        self.header.stamp = rospy.Time.from_sec(self.dataset.timestamps[idx].total_seconds())
+        gt_pose = self.dataset.poses[idx]
+
+        est_mat = trq2mat(tr, quat)
+        delta_gt_pose = delta_poses(gt_pose.copy(), self.absolute_gt_pose.copy())
+        self.absolute_gt_pose = gt_pose
+        trans_error, rot_error = pose_error(delta_gt_pose, est_mat.copy())
+
+        # correct the axis system of the estimated pose
+        c_est_mat = kitti2rvizaxis(est_mat.copy())
+        c_tr, c_quat = mat2trq(c_est_mat)
         cap_msg = CloudAndPose()
         cap_msg.seq = idx
         cap_msg.point_cloud2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
-        cap_msg.init_guess = self.tq2tf_msg(tr, quat, self.header)
+        cap_msg.init_guess = self.tq2tf_msg(c_tr, c_quat, self.header, "est")
+        print("c_tr:", c_tr, "\test_tr:", est_mat[:3, -1])
 
-        self.absolute_est_pose[:3, :3] = np.dot(self.absolute_est_pose[:3, :3], est_mat[:3, :3])
-        self.absolute_est_pose[:3, -1] += est_mat[:3, -1]
+        self.absolute_est_pose = add_poses(self.absolute_est_pose, c_est_mat)
 
-        gt_tf = self.mat2tf_msg(gt_pose, self.header)
+        est_mat_temp = self.absolute_est_pose.copy()
+        est_mat_temp[2, -1] = 0
 
-        self.cloud_pub.publish(cap_msg.point_cloud2)
-        self.est_tf_pub.publish(self.mat2tf_msg(self.absolute_est_pose, self.header))
+        est_tf = self.mat2tf_msg(est_mat_temp, self.header, "est")
+        gt_tf = self.mat2tf_msg(inverse_pose(kitti2rvizaxis(gt_pose.copy())), self.header, "gt")
+        self.est_tf_pub.publish(est_tf)
         self.gt_tf_pub.publish(gt_tf)
+        self.transform_broadcaster.sendTransform(gt_tf)
+        self.transform_broadcaster.sendTransform(est_tf)
+        self.cloud_pub.publish(cap_msg.point_cloud2)
         self.cap_pub.publish(cap_msg)
 
         print("[{}] inference spent: {:.2f} ms\t\t| Trans : {}\t\t| GT Trans: {}\t\t| Trans error: {:.4f}\t\t| "
-              "Rot error: {:.4f}".format(idx, self.infer_time_meter.avg, list(tr), list(delta_gt_pose[:3, -1].reshape(3,)), trans_error, rot_error))
+              "Rot error: {:.4f}".format(idx, self.infer_time_meter.avg, list(c_tr), list(delta_gt_pose[:3, -1].reshape(3,)), trans_error, rot_error))
         self.rate.sleep()
 
     def __call__(self):
