@@ -201,7 +201,6 @@ def rotation_error(pe):
     return np.arccos(max(min(d, 1), -1))
 
 
-# TODO: debug all-zero bug
 def translation_error(pe):
     dx = pe[0, 3]
     dy = pe[1, 3]

@@ -94,8 +94,8 @@ class CloudPublishNode:
         rospy.init_node(node_name)
         self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
         self.transform_broadcaster = tf2_ros.TransformBroadcaster()
-        self.est_tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)             # for visualization
-        self.gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)            # for visualization
+        self.est_tf_pub = rospy.Publisher(tf_topic_name, TransformStamped, queue_size=queue_size)    # for visualization
+        self.gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)         # for visualization
         self.cap_pub = rospy.Publisher("CAP", CloudAndPose, queue_size=queue_size)
         self.rate = rospy.Rate(sleep_rate)
         self.header = Header()
@@ -179,7 +179,7 @@ class CloudPublishNode:
         cap_msg = CloudAndPose()
         cap_msg.seq = idx
         cap_msg.point_cloud2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
-        cap_msg.init_guess = self.tq2tf_msg(c_tr, c_quat, self.header, "est")
+        cap_msg.init_guess = self.tq2tf_msg(*mat2trq(delta_gt_pose), self.header, "est")
 
         self.absolute_est_pose = add_poses(self.absolute_est_pose, c_est_mat)
 

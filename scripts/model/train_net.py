@@ -108,7 +108,8 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
                 loss.backward()
                 optimizer.step()
 
-                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()), val7_to_matrix(est.squeeze().cpu().detach().numpy())))
+                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()),
+                                                                   val7_to_matrix(est.squeeze().cpu().detach().numpy())))
                                                    for gt, est in zip(data[-1], pred_pose)]), 0)
                 temp_loss.update(loss.item())
                 temp_mse_loss.update(mse_loss.item())
@@ -155,7 +156,9 @@ def val(model, loader, criterion_x, criterion_rot):
             pbar.update(1)
             pred_poses += [pred_pose.cpu().numpy()]
 
-            pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()), val7_to_matrix(est.squeeze().cpu().detach().numpy()))) for gt, est in zip(data[-1], pred_pose)]), 0)
+            pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()),
+                                                               val7_to_matrix(est.squeeze().cpu().detach().numpy())))
+                                               for gt, est in zip(data[-1], pred_pose)]), 0)
             pbar.set_postfix(OrderedDict(mse_loss=loss.item(),
                                          rot_loss=rot_loss.item(),
                                          x_loss=x_loss.item(),
@@ -195,8 +198,8 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), save_path)
                 print("weights saved to", save_path)
 
-        valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else \
-                          dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0)) for valset in valsets]
+        valloaders = [gDataLoaderX(valset, batch_size=1, shuffle=False, follow_batch=['x_s', "x_t"]) if LOAD_GRAPH else
+                      dDataLoaderX(valset, batch_size=1, shuffle=False, collate_fn=PadCollate(dim=0)) for valset in valsets]
 
         device = torch.device('cuda:0' if torch.cuda.is_available() and args.gpu_first else 'cpu')
 
@@ -205,7 +208,7 @@ if __name__ == '__main__':
         start_epoch = 0
         if osp.exists(args.model_pth):
             saved_state_dict = torch.load(args.model_pth)
-            #saved_state_dict["sx"] = torch.nn.Parameter(torch.tensor(-10.0))
+            # saved_state_dict["sx"] = torch.nn.Parameter(torch.tensor(-10.0))
             model.load_state_dict(saved_state_dict)
             print("loaded weights from", args.model_pth)
             start_epoch = int(re.findall(r"epoch=(\d+?)_", args.model_pth)[0])

@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation
 
 
 class NavPath:
-    def __init__(self, marker_publisher, frame_id, color4f=(0.0, 1.0, 0.0, 0.8), buffer_size=10, gt_navPath=None):
+    def __init__(self, marker_publisher, frame_id, color4f=(0.0, 1.0, 0.0, 0.8), buffer_size=10, gt_navPath=None, clip_gt_dist=1):
         self.translations = None
         self.quats = None
         self.header = Header(frame_id=frame_id)
@@ -21,11 +21,16 @@ class NavPath:
 
         self.marker_publisher = marker_publisher
         self.gt_navPath = gt_navPath
+        self.clip_gt_dist = clip_gt_dist
 
     def translation_to_gt(self, seq):
         if "gt" in self.header.frame_id:
             return np.zeros((3, ))
-        return self.translations[seq] - self.gt_navPath.translations[seq]
+        raw_gt_dist = self.translations[seq] - self.gt_navPath.translations[seq]
+        # clip the distance to gt if it's too much, just for visualization
+        if 0 < self.clip_gt_dist < np.sqrt(np.sum(np.square(raw_gt_dist))):
+            return raw_gt_dist * self.clip_gt_dist / np.sqrt(np.sum(np.square(raw_gt_dist)))
+        return raw_gt_dist
 
     def update_marker(self):
         marker = Marker(type=Marker.LINE_STRIP, color=ColorRGBA(1, 1, 1, 1), lifetime=rospy.Duration(1),
@@ -59,9 +64,6 @@ class NavPath:
                          msg.transform.rotation.w]).reshape(1, -1)
         self.translations = translation if self.translations is None else np.concatenate([self.translations, translation])
         self.quats = quat if self.quats is None else np.concatenate([self.quats, quat])
-        """if self.translations.shape[0] > self.buffer_size:
-            self.translations = self.translations[1:, :]
-            self.quats = self.quats[1:, :]"""
 
         self.update_marker()
         self.publish_marker()
