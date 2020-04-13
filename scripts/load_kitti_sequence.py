@@ -36,7 +36,6 @@ parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, 
 parser.add_argument("--data_dir", type=str, default='/home/kartmann/share_folder/dataset')
 parser.add_argument("-s", "--sequence", type=str, default='00')
 parser.add_argument("-r", "--rate", default=0.5, type=float)
-parser.add_argument("--dropout", type=float, default=0.5)
 args = parser.parse_args()
 args_dict = vars(args)
 print('Argument list to program')
@@ -49,7 +48,7 @@ LOAD_GRAPH = False
 
 
 def inverse_pose(pose_mat):
-    pose_mat[:3, :3] = Rotation.from_matrix(pose_mat[:3, :3]).inv().as_matrix()
+    pose_mat[:3, :3] = np.eye(3)    # Rotation.from_matrix(pose_mat[:3, :3]).inv().as_matrix()
     pose_mat[:3, -1] = -pose_mat[:3, -1]
     return pose_mat
 
@@ -108,7 +107,7 @@ class CloudPublishNode:
         transform_dict[GridSampling([args.grid_size] * 3)] = ["train", "test"]
         transform_dict[NormalizeScale()] = ["train", "test"]
         transform = ComposeAdapt(transform_dict)
-        self.model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dropout=args.dropout, dof=7)
+        self.model = Net(graph_input=LOAD_GRAPH, act="LeakyReLU", transform=transform, dof=7)
         if args.model_path is not None and osp.exists(args.model_path):
             self.model.load_state_dict(torch.load(args.model_path, map_location=torch.device("cpu")))
             print("loaded weights from", args.model_path)
@@ -181,14 +180,12 @@ class CloudPublishNode:
         cap_msg.seq = idx
         cap_msg.point_cloud2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
         cap_msg.init_guess = self.tq2tf_msg(c_tr, c_quat, self.header, "est")
-        print("c_tr:", c_tr, "\test_tr:", est_mat[:3, -1])
 
         self.absolute_est_pose = add_poses(self.absolute_est_pose, c_est_mat)
 
         est_mat_temp = self.absolute_est_pose.copy()
-        est_mat_temp[2, -1] = 0
 
-        est_tf = self.mat2tf_msg(est_mat_temp, self.header, "est")
+        est_tf = self.mat2tf_msg(inverse_pose(est_mat_temp), self.header, "est")
         gt_tf = self.mat2tf_msg(inverse_pose(kitti2rvizaxis(gt_pose.copy())), self.header, "gt")
         self.est_tf_pub.publish(est_tf)
         self.gt_tf_pub.publish(gt_tf)

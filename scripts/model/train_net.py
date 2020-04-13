@@ -108,7 +108,8 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
                 loss.backward()
                 optimizer.step()
 
-                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()), val7_to_matrix(est.squeeze().cpu().detach().numpy()))) for gt, est in zip(data[-1], pred_pose)]), 0)
+                pose_error_avg = np.mean(np.array([list(pose_error(val7_to_matrix(gt.squeeze().cpu().detach().numpy()), val7_to_matrix(est.squeeze().cpu().detach().numpy())))
+                                                   for gt, est in zip(data[-1], pred_pose)]), 0)
                 temp_loss.update(loss.item())
                 temp_mse_loss.update(mse_loss.item())
                 temp_rot_loss.update(rot_loss.item())
@@ -170,7 +171,8 @@ def val(model, loader, criterion_x, criterion_rot):
 if __name__ == '__main__':
     random.seed(args.seed)
     sequence = [f"{idx:02d}" for idx in range(11)]
-    random.shuffle(sequence)
+    train_sequence = sequence[:7]
+    val_sequence = sequence[7:]
     print(sequence)
 
     for i in [1,2,3,4]:
@@ -179,8 +181,8 @@ if __name__ == '__main__':
         valloss_hist = []
         valxloss_hist = []
 
-        val_seqences = sequence[i * len(sequence) // N_FOLD :(i+1) * len(sequence) // N_FOLD]
-        train_seqences = list(set(sequence) - set(val_seqences))
+        val_seqences = val_sequence # sequence[i * len(sequence) // N_FOLD :(i+1) * len(sequence) // N_FOLD]
+        train_seqences = train_sequence # list(set(sequence) - set(val_seqences))
 
         print("training on seq:", train_seqences)
         print("validation on seq:", val_seqences)

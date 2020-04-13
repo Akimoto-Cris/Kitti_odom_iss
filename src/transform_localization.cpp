@@ -82,7 +82,7 @@ Eigen::Matrix4f localize (
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
-  approximate_voxel_filter.setLeafSize ( 1 , 1, 3 );
+  approximate_voxel_filter.setLeafSize ( 0.5, 0.5, 0.5 );
   approximate_voxel_filter.setInputCloud ( source_cloud_ptr );
   approximate_voxel_filter.filter ( *filtered_cloud_ptr );
   target_tree->setInputCloud ( target_cloud_ptr );
@@ -123,7 +123,7 @@ void save_transform_to_file (const char* filename, const Eigen::Matrix4f& Tmf)
 {
   FILE* fp;
   if ( ( fp = fopen ( filename, "a+" ) ) == NULL ) printf("cannot open file!\n");
-  fprintf( fp, "%f %f %f %f %f %f %f %f %f %f %f %f",
+  fprintf( fp, "%f %f %f %f %f %f %f %f %f %f %f %f\n   ",
                 Tmf(0, 0), Tmf(0, 1), Tmf(0, 2), Tmf(0, 3),
                 Tmf(1, 0), Tmf(1, 1), Tmf(1, 2), Tmf(1, 3),
                 Tmf(2, 0), Tmf(2, 1), Tmf(2, 2), Tmf(2, 3) );
@@ -243,7 +243,10 @@ int main(int argc, char** argv)
       cout << "NDT result: \n" << transformMatrix << "\n==============================" << endl;
 
       accumulate_pose ( transformMatrix );
-      auto ndt_tf = broadcast_transform ( absolute_pose, seq );
+      save_transform_to_file ( argv[1], absolute_pose );
+      Eigen::Matrix4f inversed_pose = Eigen::Matrix4f::Identity ( 4, 4 );
+      inversed_pose.rightCols ( 1 ) = absolute_pose.rightCols ( 1 );
+      auto ndt_tf = broadcast_transform ( inversed_pose, seq );
       ndt_pose_pub.publish(ndt_tf);
 
       ros::Duration duration = ros::Time::now () - begin;

@@ -214,4 +214,5 @@ def val7_to_matrix(pose_vect):
     quat = pose_vect[3:]
     mat = np.eye(4)
     mat[:3, :3] = Rotation.from_quat(quat).as_matrix()
+    mat[:3, -1] = translation
     return mat
