@@ -80,19 +80,19 @@ Eigen::Matrix4f localize (
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
-  approximate_voxel_filter.setLeafSize ( 1, 1, 1 );
+  approximate_voxel_filter.setLeafSize ( 0.5, 0.5, 0.5 );
   approximate_voxel_filter.setInputCloud ( source_cloud_ptr );
   approximate_voxel_filter.filter ( *filtered_cloud_ptr );
   target_tree->setInputCloud ( target_cloud_ptr );
 
   cout << "Filtered cloud contains " << filtered_cloud_ptr->size () << " data points" << endl;
-  cout << "Target Tree: " << target_tree << endl;
+  cout << "Target Tree: " << *target_tree << endl;
 
   pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
 
   ndt.setTransformationEpsilon ( 0.01 );
   ndt.setStepSize ( 0.1 );
-  ndt.setResolution ( 0.5 );
+  ndt.setResolution ( 1 );
   ndt.setMaximumIterations ( 20 );
   ndt.setSearchMethodTarget ( target_tree );
   ndt.setInputSource ( filtered_cloud_ptr );
@@ -243,7 +243,7 @@ int main(int argc, char** argv)
       accumulate_pose ( transformMatrix );
       save_transform_to_file ( argv[1], absolute_pose );
       Eigen::Matrix4f inversed_pose = Eigen::Matrix4f::Identity ( 4, 4 );
-      inversed_pose.rightCols ( 1 ) = - absolute_pose.rightCols ( 1 );
+      inversed_pose.rightCols ( 1 ) = absolute_pose.rightCols ( 1 );
       auto temp = inversed_pose ( 3, 0 ); inversed_pose ( 3, 0 ) = inversed_pose ( 3, 1 ); inversed_pose ( 3, 1 ) = temp;
       auto ndt_tf = broadcast_transform ( inversed_pose, seq );
       ndt_pose_pub.publish(ndt_tf);

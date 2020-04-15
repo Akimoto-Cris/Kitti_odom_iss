@@ -69,7 +69,7 @@ L2_LAMBDA = args.reg_lambda
 transform_dict = OrderedDict()
 transform_dict[GridSampling(GRID_SAMPLE_SIZE)] = ["train", "test"]
 transform_dict[NormalizeScale()] = ["train", "test"]
-transform_dict[RandomTranslate(args.random_trans)] = ["train"]
+transform_dict[RandomTranslate(args.random_trans)] = ["train", "test"]
 transform = ComposeAdapt(transform_dict)
 #transform = GridSampling(GRID_SAMPLE_SIZE)
 

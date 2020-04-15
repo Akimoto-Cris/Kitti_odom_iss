@@ -5,7 +5,7 @@ set batch_size=4
 set epoch=100
 set lr=0.0001
 set lr_decay=30
-set weight_decay=0.00005
+set weight_decay=0.0
 set dropout=0.5
 set num_workers=4
 set grid_size=3
@@ -13,7 +13,7 @@ set model_path=weights_dropout_quat_balance_reg_rt_4\ckpt_epoch=2_1thfold_valxlo
 set save_dir=weights_dropout_quat_balance_reg_rt_4
 set reg_lambda=0.005
 set save_strategy=valxloss
-set random_trans=1e-4
+set random_trans=1e-2
 
 call conda activate torch
 call python train_net.py -d %datadir% --n_fold %n_fold% -b %batch_size% --lr %lr% -wd %weight_decay% --weights_dir %save_dir%^

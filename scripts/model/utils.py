@@ -21,7 +21,11 @@ from torch_geometric.data import DataLoader as gDataLoader, Data as gData
 def save_pose_predictions(init_pose, pred_poses: list, save_path):
     absolute_pose = init_pose
     with open(save_path, "w") as f:
+        pose_dcm_str = map(lambda x: f"{x:4e}", list(absolute_pose.reshape(-1)))
+        f.write(" ".join(tuple(pose_dcm_str)) + "\n")
         for i, batch_pose in enumerate(pred_poses):
+            if batch_pose.shape[0] == 1:
+                batch_pose = batch_pose.reshape(1,-1)
             for pose in batch_pose:
                 rot = Rotation.from_quat(pose[3:]).as_dcm()
                 absolute_rot = np.dot(np.linalg.inv(absolute_pose[:3, :3]), rot)
@@ -29,7 +33,7 @@ def save_pose_predictions(init_pose, pred_poses: list, save_path):
                 absolute_pose = np.hstack([absolute_rot, absolute_trans.reshape(-1, 1)])
                 pose_dcm_str = map(lambda x: f"{x:4e}", list(absolute_pose.reshape(-1)))
                 f.write(" ".join(tuple(pose_dcm_str)) + "\n")
-        #print("poses writed to", save_path)
+        print("poses writed to", save_path)
 
 
 class AverageMeter:

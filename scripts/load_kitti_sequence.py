@@ -13,7 +13,7 @@
 import pykitti
 import rospy
 from model.point_net import Net
-from model.utils import ComposeAdapt, AverageMeter, pose_error, val7_to_matrix
+from model.utils import ComposeAdapt, AverageMeter, pose_error, val7_to_matrix, save_pose_predictions
 from collections import OrderedDict
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import PointCloud2, PointField
@@ -60,10 +60,10 @@ def delta_poses(mat_1, mat_2):
     return ret
 
 
-def kitti2rvizaxis(mat, delete_z=True):
-    mat[[0, 2], -1] = mat[[2, 0], -1]
-    mat[[1, 2], :] = mat[[2, 1], :]
-    mat[:, [1, 2]] = mat[:, [2, 1]]
+def kitti2rvizaxis(mat, delete_z=False):
+    mat[:3, -1] = mat[[2, 0, 1], -1]
+    mat[[1, 2], :3] = mat[[2, 1], :3]
+    mat[:3, [1, 2]] = mat[:3, [2, 1]]
     if delete_z:
         mat[2, -1] = 0
     return mat
@@ -90,7 +90,7 @@ def add_poses(mat_1, mat_2):    # mat_1 is added by mat_2
 
 
 class CloudPublishNode:
-    def __init__(self, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
+    def __init__(self, seq, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
         rospy.init_node(node_name)
         self.cloud_pub = rospy.Publisher(cloud_topic_name, PointCloud2, queue_size=queue_size)
         self.transform_broadcaster = tf2_ros.TransformBroadcaster()
@@ -102,6 +102,7 @@ class CloudPublishNode:
         self.header.frame_id = global_tf_name
         self.child_tf_name = child_tf_name
         self.dataset = dataset
+        self.seq = seq
 
         transform_dict = OrderedDict()
         transform_dict[GridSampling([args.grid_size] * 3)] = ["train", "test"]
@@ -116,11 +117,14 @@ class CloudPublishNode:
         self.absolute_gt_pose = np.eye(4)[:3, :]
         self.absolute_est_pose = np.eye(4)[:3, :]
         self.infer_time_meter = AverageMeter()
+        self.tr_error_meter = AverageMeter()
+        self.rot_error_meter = AverageMeter()
 
         self.fields = [PointField('x', 0, PointField.FLOAT32, 1),
                        PointField('y', 4, PointField.FLOAT32, 1),
                        PointField('z', 8, PointField.FLOAT32, 1),
                        PointField('intensity', 12, PointField.FLOAT32, 1)]
+        self.pose_list = []
 
     def estimate_pose(self, target_cloud, source_cloud):
         source_cloud = torch.from_numpy(source_cloud)
@@ -132,6 +136,7 @@ class CloudPublishNode:
 
         self.infer_time_meter.update(time.time() - begin)
         pose = pose.detach().numpy()
+        self.pose_list.append(pose)
         return pose[0, :3], pose[0, 3:]
 
     def tq2tf_msg(self, translation, quaternion, header, typ="gt"):
@@ -172,6 +177,8 @@ class CloudPublishNode:
         delta_gt_pose = delta_poses(gt_pose.copy(), self.absolute_gt_pose.copy())
         self.absolute_gt_pose = gt_pose
         trans_error, rot_error = pose_error(delta_gt_pose, est_mat.copy())
+        self.tr_error_meter.update(trans_error)
+        self.rot_error_meter.update(rot_error)
 
         # correct the axis system of the estimated pose
         c_est_mat = kitti2rvizaxis(est_mat.copy())
@@ -203,9 +210,10 @@ class CloudPublishNode:
             if rospy.is_shutdown():
                 break
             self.serve(idx)
-        rospy.spin()
+        print("Avg Tr Error: {:.3e}\tAvg Rot Error: {:.3e}".format(self.tr_error_meter.avg, self.rot_error_meter.avg))
+        save_pose_predictions(np.eye(4)[:3, :], self.pose_list, f"{self.seq}.txt")
 
 
 if __name__ == '__main__':
-
-    CloudPublishNode("cloudPublisher", "point_cloud2", "est_pose", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()
+    CloudPublishNode(args.sequence, "cloudPublisher", "point_cloud2", "est_pose", pykitti.odometry(args.data_dir, args.sequence), "map", "car")()
+    rospy.spin()

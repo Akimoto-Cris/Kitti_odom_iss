@@ -411,7 +411,7 @@ bool eval (string result_sha,Mail* mail) {
   // string gt_dir         = "data/odometry/poses";
   // string result_dir     = "results/" + result_sha;
   string gt_dir         = "/home/kartmann/share_folder/dataset/poses";
-  string result_dir     = "/home/kartmann/share_folder/kitti_localization/scripts/model/weights_dropout_quat_balance/";
+  string result_dir     = "/home/kartmann/catkin_src";
   string error_dir      = result_dir + "/errors";
   string plot_path_dir  = result_dir + "/plot_path";
   string plot_error_dir = result_dir + "/plot_error";
