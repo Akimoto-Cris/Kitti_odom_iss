@@ -96,12 +96,13 @@ def train(model, epoch, train_loader, optimizer, criterion_x, criterion_rot):
             # loss = F.nll_loss(model(data), data.y)
             gt_poses = data.y.reshape(train_loader.batch_size, -1).float() if LOAD_GRAPH else data[-1].float()
             pred_pose = model(data)
-            if len(gt_poses) == 2:
-                print(data[0].shape)
-                print(pred_pose.shape)
-            x_loss = criterion_x(pred_pose[:, :3], gt_poses[:, :3])
             try:
-                rot_loss = criterion_rot(pred_pose[:, 3:] / torch.norm(pred_pose[:, 3:], dim=1), gt_poses[:, 3:])
+                if len(gt_poses) == 2:
+                    print(data[0].shape)
+                    print(pred_pose.shape)
+                x_loss = criterion_x(pred_pose[:, :3], gt_poses[:, :3])
+
+                rot_loss = criterion_rot(pred_pose[:, 3:], gt_poses[:, 3:] / torch.norm(gt_poses[:, 3:], dim=0))
 
                 mse_loss = torch.exp(-model.sx) * x_loss + torch.exp(-model.sq) * rot_loss
                 loss = L2_LAMBDA * l2reg(model) + mse_loss + model.sx + model.sq
@@ -221,6 +222,8 @@ if __name__ == '__main__':
         criterion_rot = nn.MSELoss().to(device)
 
         for epoch in range(start_epoch, EPOCH):
+            random.shuffle(train_seqences)
+
             tem_train_loss = AverageMeter()
             tem_train_mse_loss = AverageMeter()
             tem_train_x_loss = AverageMeter()

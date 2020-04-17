@@ -48,7 +48,7 @@ LOAD_GRAPH = False
 
 
 def inverse_pose(pose_mat):
-    pose_mat[:3, :3] = np.eye(3)    # Rotation.from_matrix(pose_mat[:3, :3]).inv().as_matrix()
+    pose_mat[:3, :3] = Rotation.from_matrix(pose_mat[:3, :3]).inv().as_matrix()
     pose_mat[:3, -1] = -pose_mat[:3, -1]
     return pose_mat
 
@@ -64,6 +64,7 @@ def kitti2rvizaxis(mat, delete_z=False):
     mat[:3, -1] = mat[[2, 0, 1], -1]
     mat[[1, 2], :3] = mat[[2, 1], :3]
     mat[:3, [1, 2]] = mat[:3, [2, 1]]
+    mat[1, -1] = -mat[1, -1]
     if delete_z:
         mat[2, -1] = 0
     return mat
@@ -89,6 +90,18 @@ def add_poses(mat_1, mat_2):    # mat_1 is added by mat_2
     return new
 
 
+def transform_cloud(pointcloud: np.array, car2map: np.array):
+    if pointcloud.shape[1] == 3:
+        pointcloud = np.hstack([pointcloud, np.ones(pointcloud.shape[0], 1)])
+    elif pointcloud.shape[1] == 4:
+        pointcloud[:, -1] = 1
+    if car2map.shape[0] == 3:
+        temp = np.eye(4)
+        temp[:3, :] = car2map
+        car2map = temp
+    return car2map.dot(pointcloud.T).T
+
+
 class CloudPublishNode:
     def __init__(self, seq, node_name, cloud_topic_name, tf_topic_name, dataset, global_tf_name="map", child_tf_name="car"):
         rospy.init_node(node_name)
@@ -98,9 +111,8 @@ class CloudPublishNode:
         self.gt_tf_pub = rospy.Publisher("gt_pose", TransformStamped, queue_size=queue_size)         # for visualization
         self.cap_pub = rospy.Publisher("CAP", CloudAndPose, queue_size=queue_size)
         self.rate = rospy.Rate(sleep_rate)
-        self.header = Header()
-        self.header.frame_id = global_tf_name
-        self.child_tf_name = child_tf_name
+        self.header = Header(frame_id=global_tf_name)
+        self.child_tf_name = child_tf_name      # base name before appending prefix
         self.dataset = dataset
         self.seq = seq
 
@@ -192,13 +204,13 @@ class CloudPublishNode:
 
         est_mat_temp = self.absolute_est_pose.copy()
 
-        est_tf = self.mat2tf_msg(inverse_pose(est_mat_temp), self.header, "est")
-        gt_tf = self.mat2tf_msg(inverse_pose(kitti2rvizaxis(gt_pose.copy())), self.header, "gt")
+        est_tf = self.mat2tf_msg(est_mat_temp, self.header, "est")
+        gt_tf = self.mat2tf_msg(kitti2rvizaxis(gt_pose.copy()), self.header, "gt")
         self.est_tf_pub.publish(est_tf)
         self.gt_tf_pub.publish(gt_tf)
         self.transform_broadcaster.sendTransform(gt_tf)
         self.transform_broadcaster.sendTransform(est_tf)
-        self.cloud_pub.publish(cap_msg.point_cloud2)
+        self.cloud_pub.publish(point_cloud2.create_cloud(Header(frame_id="gt_car"), self.fields, [point for point in current_cloud]))
         self.cap_pub.publish(cap_msg)
 
         print("[{}] inference spent: {:.2f} ms\t\t| Trans : {}\t\t| GT Trans: {}\t\t| Trans error: {:.4f}\t\t| "

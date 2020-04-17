@@ -411,7 +411,7 @@ bool eval (string result_sha,Mail* mail) {
   // string gt_dir         = "data/odometry/poses";
   // string result_dir     = "results/" + result_sha;
   string gt_dir         = "/home/kartmann/share_folder/dataset/poses";
-  string result_dir     = "/home/kartmann/catkin_src";
+  string result_dir     = "/home/kartmann/catkin_src/ndt_res";
   string error_dir      = result_dir + "/errors";
   string plot_path_dir  = result_dir + "/plot_path";
   string plot_error_dir = result_dir + "/plot_error";
@@ -425,7 +425,7 @@ bool eval (string result_sha,Mail* mail) {
   vector<errors> total_err;
 
   // for all sequences do
-  for (int32_t i=8; i<10; i++) {
+  for (int32_t i=4; i<11; i++) {
 
     // file name
     char file_name[256];

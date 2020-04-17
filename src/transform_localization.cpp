@@ -37,6 +37,7 @@ boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
 //boost::shared_ptr<tf::TransformListener> tf_listener_ptr = NULL;
 Eigen::Matrix4f absolute_pose = Eigen::Matrix4f::Identity ( 4, 4 );
 bool random_guess = false;
+bool DELETE_Z = false;
 
 
 class AverageMeter
@@ -80,13 +81,12 @@ Eigen::Matrix4f localize (
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
-  approximate_voxel_filter.setLeafSize ( 0.5, 0.5, 0.5 );
+  approximate_voxel_filter.setLeafSize ( 1, 1, 1 );
   approximate_voxel_filter.setInputCloud ( source_cloud_ptr );
   approximate_voxel_filter.filter ( *filtered_cloud_ptr );
   target_tree->setInputCloud ( target_cloud_ptr );
 
   cout << "Filtered cloud contains " << filtered_cloud_ptr->size () << " data points" << endl;
-  cout << "Target Tree: " << *target_tree << endl;
 
   pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
 
@@ -94,7 +94,7 @@ Eigen::Matrix4f localize (
   ndt.setStepSize ( 0.1 );
   ndt.setResolution ( 1 );
   ndt.setMaximumIterations ( 20 );
-  ndt.setSearchMethodTarget ( target_tree );
+  //ndt.setSearchMethodTarget ( target_tree );
   ndt.setInputSource ( filtered_cloud_ptr );
   ndt.setInputTarget ( target_cloud_ptr );
 
@@ -112,7 +112,6 @@ Eigen::Matrix4f localize (
 
   Eigen::Matrix4f transormMatrix = ndt.getFinalTransformation ();
   pcl::transformPointCloud ( *target_cloud_ptr, *output_cloud_ptr, transormMatrix );
-
   return transormMatrix;
 }
 
@@ -135,6 +134,32 @@ void accumulate_pose(Eigen::Matrix4f Tmf)
 }
 
 
+Eigen::Matrix4f kitti2rvizaxis(Eigen::Matrix4f mat)
+{
+  // mat[:3, -1] = mat[[2, 0, 1], -1]
+  auto mat_01 = mat.topRightCorner ( 2, 1 );
+  mat( 0, 3 ) = mat( 2, 3 );
+  mat.block<2, 1> ( 1, 3 ) = mat_01;
+
+  //mat[[1, 2], :3] = mat[[2, 1], :3]
+  auto mat_r1 = mat.row ( 1 );
+  mat.row ( 1 ) = mat.row ( 2 );
+  mat.row ( 2 ) = mat_r1;
+
+  //mat[:3, [1, 2]] = mat[:3, [2, 1]]
+  auto mat_c1 = mat.col ( 1 );
+  mat.col ( 1 ) = mat.col ( 2 );
+  mat.col ( 2 ) = mat_c1;
+
+  // mat[1, -1] = -mat[1, -1]
+  mat( 1, 3 ) = -mat( 1, 3 );
+
+  if ( DELETE_Z ) mat( 2, 3 ) = 0;
+  cout << "kitti transform \n" << mat << endl;
+  return mat;
+}
+
+
 geometry_msgs::TransformStamped broadcast_transform (Eigen::Matrix4f Tmf, uint s)
 {
   //Eigen::Matrix4d Tmd = transformMatrix.cast<double> ();
@@ -144,6 +169,7 @@ geometry_msgs::TransformStamped broadcast_transform (Eigen::Matrix4f Tmf, uint s
                   Tmf(2, 0), Tmf(2, 1), Tmf(2, 2) );
   tf::Quaternion q;
   tf3d.getRotation ( q );
+  auto recipNorm = 1 / sqrt(q.x () * q.x () + q.y () * q.y () + q.z () * q.z () + q.w () * q.w ());
 
   geometry_msgs::TransformStamped transformStamped;
   transformStamped.header.stamp = ros::Time::now ();
@@ -153,10 +179,10 @@ geometry_msgs::TransformStamped broadcast_transform (Eigen::Matrix4f Tmf, uint s
   transformStamped.transform.translation.x = Tmf(0, 3);
   transformStamped.transform.translation.y = Tmf(1, 3);
   transformStamped.transform.translation.z = Tmf(2, 3);
-  transformStamped.transform.rotation.x = q.x ();
-  transformStamped.transform.rotation.y = q.y ();
-  transformStamped.transform.rotation.z = q.z ();
-  transformStamped.transform.rotation.w = q.w ();
+  transformStamped.transform.rotation.x = q.x () * recipNorm;
+  transformStamped.transform.rotation.y = q.y () * recipNorm;
+  transformStamped.transform.rotation.z = q.z () * recipNorm;
+  transformStamped.transform.rotation.w = q.w () * recipNorm;
   br_ptr->sendTransform ( transformStamped );
   return transformStamped;
 }
@@ -242,11 +268,11 @@ int main(int argc, char** argv)
 
       accumulate_pose ( transformMatrix );
       save_transform_to_file ( argv[1], absolute_pose );
-      Eigen::Matrix4f inversed_pose = Eigen::Matrix4f::Identity ( 4, 4 );
-      inversed_pose.rightCols ( 1 ) = absolute_pose.rightCols ( 1 );
-      auto temp = inversed_pose ( 3, 0 ); inversed_pose ( 3, 0 ) = inversed_pose ( 3, 1 ); inversed_pose ( 3, 1 ) = temp;
-      auto ndt_tf = broadcast_transform ( inversed_pose, seq );
+
+      auto kittified_transform = kitti2rvizaxis ( absolute_pose );
+      auto ndt_tf = broadcast_transform ( kittified_transform, seq );
       ndt_pose_pub.publish(ndt_tf);
+      cout << absolute_pose << endl;
 
       ros::Duration duration = ros::Time::now () - begin;
       spend_time_meter.update ( duration.toSec () );
