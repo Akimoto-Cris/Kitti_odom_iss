@@ -38,7 +38,7 @@ boost::shared_ptr<tf::TransformBroadcaster> br_ptr;
 Eigen::Matrix4f absolute_pose = Eigen::Matrix4f::Identity ( 4, 4 );
 bool random_guess = false;
 bool DELETE_Z = false;
-
+PointCloud::Ptr cloud_ptrs[3000];
 
 class AverageMeter
 {
@@ -69,7 +69,7 @@ inline void *f(void *ptr) { ros::spin(); }
 
 void initGlobals()
 {
-  QUEUE_SIZE = 30; // must larger than 2
+  QUEUE_SIZE = 50; // must larger than 2
   br_ptr.reset( new tf::TransformBroadcaster );
 }
 
@@ -81,20 +81,20 @@ Eigen::Matrix4f localize (
 {
   PointCloud::Ptr filtered_cloud_ptr ( new PointCloud );
   pcl::ApproximateVoxelGrid<pcl::PointXYZ> approximate_voxel_filter;
-  approximate_voxel_filter.setLeafSize ( 1, 1, 1 );
+  approximate_voxel_filter.setLeafSize ( 0.2, 0.2, 0.2 );
   approximate_voxel_filter.setInputCloud ( source_cloud_ptr );
   approximate_voxel_filter.filter ( *filtered_cloud_ptr );
   target_tree->setInputCloud ( target_cloud_ptr );
 
-  cout << "Filtered cloud contains " << filtered_cloud_ptr->size () << " data points" << endl;
+  //cout << "Filtered cloud contains " << filtered_cloud_ptr->size () << " data points" << endl;
 
   pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
 
-  ndt.setTransformationEpsilon ( 0.01 );
-  ndt.setStepSize ( 0.1 );
-  ndt.setResolution ( 1 );
-  ndt.setMaximumIterations ( 20 );
-  //ndt.setSearchMethodTarget ( target_tree );
+  ndt.setTransformationEpsilon ( 0.001 );
+  ndt.setStepSize ( 0.3 );
+  ndt.setResolution ( 1. );
+  ndt.setMaximumIterations ( 50 );
+  ndt.setSearchMethodTarget ( target_tree );
   ndt.setInputSource ( filtered_cloud_ptr );
   ndt.setInputTarget ( target_cloud_ptr );
 
@@ -111,7 +111,6 @@ Eigen::Matrix4f localize (
        << " iters\nscore: " << ndt.getFitnessScore () << endl;
 
   Eigen::Matrix4f transormMatrix = ndt.getFinalTransformation ();
-  pcl::transformPointCloud ( *target_cloud_ptr, *output_cloud_ptr, transormMatrix );
   return transormMatrix;
 }
 
@@ -131,20 +130,24 @@ void accumulate_pose(Eigen::Matrix4f Tmf)
 {
   absolute_pose.topLeftCorner ( 3, 3 ) = Tmf.topLeftCorner ( 3, 3 ) * absolute_pose.topLeftCorner ( 3, 3 );
   absolute_pose.rightCols ( 1 ) += Tmf.rightCols ( 1 );
+  absolute_pose( 3, 3 ) = 1;
 }
 
 
 Eigen::Matrix4f kitti2rvizaxis(Eigen::Matrix4f mat)
 {
   // mat[:3, -1] = mat[[2, 0, 1], -1]
-  auto mat_01 = mat.topRightCorner ( 2, 1 );
-  mat( 0, 3 ) = mat( 2, 3 );
-  mat.block<2, 1> ( 1, 3 ) = mat_01;
+  auto mat_03 = mat(0, 3);
+  auto mat_13 = mat(1, 3);
+  auto mat_23 = mat(2, 3);
+  mat( 0, 3 ) = mat_23;
+  mat( 1, 3 ) = mat_03;
+  mat( 2, 3 ) = mat_13;
 
   //mat[[1, 2], :3] = mat[[2, 1], :3]
-  auto mat_r1 = mat.row ( 1 );
-  mat.row ( 1 ) = mat.row ( 2 );
-  mat.row ( 2 ) = mat_r1;
+  auto mat_r1 = mat.block<1, 3> ( 1, 0 );
+  mat.block<1, 3> ( 1, 0 ) = mat.block<1, 3> ( 2, 0 );
+  mat.block<1, 3> ( 2, 0 ) = mat_r1;
 
   //mat[:3, [1, 2]] = mat[:3, [2, 1]]
   auto mat_c1 = mat.col ( 1 );
@@ -190,15 +193,17 @@ geometry_msgs::TransformStamped broadcast_transform (Eigen::Matrix4f Tmf, uint s
 
 void pcl_callback (const sensor_msgs::PointCloud2ConstPtr input)
 {
-  PointCloud::Ptr cloud_ptr ( new PointCloud );
-  pcl::fromROSMsg ( *input, *cloud_ptr );
+  auto i = (uint) input->header.seq;
+  PointCloud temp;
+  cloud_ptrs [i] = boost::make_shared<PointCloud> ( temp );
+  pcl::fromROSMsg ( *input, *cloud_ptrs[i] );
   //cout << "Received Pointcloud of size " << cloud_ptr->size () << endl;
 
   if ( pc_queue.size () >= QUEUE_SIZE ) { pc_queue.erase (pc_queue.begin ()->first ); cout << "erased key: " << pc_queue.begin ()->first << "from pc_queue" << endl; }
   //pc_queue->insert ( make_pair<uint, PointCloud::Ptr> ( (uint) input->header.seq, cloud_ptr ) );
   // pc_queue[(uint) input->header.seq] = cloud_ptr;
-  auto i = (uint) input->header.seq;
-  pc_queue.insert ( make_pair ( i, cloud_ptr ) );
+
+  pc_queue.insert ( make_pair ( i, cloud_ptrs[i] ) );
 }
 
 
@@ -224,9 +229,9 @@ void cloud_and_pose_callback (const kitti_localization::CloudAndPose& cap_msg)
   pose_guess_callback ( cap_msg.init_guess );
   pcl_callback ( boost::make_shared<sensor_msgs::PointCloud2> ( cap_msg.point_cloud2 ) );
 
-  //cout << "insert to tf_queue\t " << tf_queue.end()->first << ": " << tf_queue.end()->second << endl;
-  //cout << "insert to pc_queue\t " << pc_queue.end()->first << ": " << pc_queue.end()->second << endl;
-  //printf("=============================================\n");
+  cout << "insert to tf_queue\t " << tf_queue.end()->first << ": " << tf_queue.end()->second << endl;
+  cout << "insert to pc_queue\t " << pc_queue.end()->first << ": " << pc_queue.end()->second << endl;
+  printf("=============================================\n");
 }
 
 
@@ -245,7 +250,8 @@ int main(int argc, char** argv)
   pthread_t pid;
   pthread_create ( &pid, NULL, f, NULL );
 
-  uint seq = 2;
+  uint seq = argc == 2 ? 1: static_cast<uint> ( atoi ( argv[2] ) );
+
   while ( nh.ok () )
   {
     auto it = pc_queue.find ( seq );
@@ -254,14 +260,17 @@ int main(int argc, char** argv)
     {
       ros::Time begin = ros::Time::now ();
       cout << "\n\n=======================================" << endl;
-      PointCloud::Ptr target_cloud_ptr = it->second;
+      PointCloud::Ptr source_cloud_ptr = it->second;
       auto prev_it = pc_queue.find ( seq - 1 );
       if ( prev_it == pc_queue.end () ) { cout << "Cannot find previous frame pointcloud, exit." << endl; return -1; }
-      PointCloud::Ptr source_cloud_ptr = prev_it->second;
+      PointCloud::Ptr target_cloud_ptr = prev_it->second;
 
       auto it_tf = tf_queue.find ( seq );
       if ( it_tf == tf_queue.end () ) { cout << "Cannot find previous frame init_guess, exit." << endl; return -1; }
       auto init_guess = it_tf->second;
+
+      ///cout << "target:" << endl;
+      //for (int i=0; i < 10; ++i) cout << target_cloud_ptr->points[i].x << " " << target_cloud_ptr->points[i].y << " " << target_cloud_ptr->points[i].z << endl;
 
       auto transformMatrix = localize ( target_cloud_ptr, source_cloud_ptr, init_guess );
       cout << "NDT result: \n" << transformMatrix << "\n==============================" << endl;
@@ -269,8 +278,8 @@ int main(int argc, char** argv)
       accumulate_pose ( transformMatrix );
       save_transform_to_file ( argv[1], absolute_pose );
 
-      auto kittified_transform = kitti2rvizaxis ( absolute_pose );
-      auto ndt_tf = broadcast_transform ( kittified_transform, seq );
+      //auto kittified_transform = kitti2rvizaxis ( absolute_pose );
+      auto ndt_tf = broadcast_transform ( absolute_pose, seq );
       ndt_pose_pub.publish(ndt_tf);
       cout << absolute_pose << endl;
 

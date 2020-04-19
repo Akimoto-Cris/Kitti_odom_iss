@@ -35,7 +35,8 @@ parser.add_argument("-m", "--model_path")
 parser.add_argument("-gs", "--grid_size", help="gridsampling size", type=float, default=3)
 parser.add_argument("--data_dir", type=str, default='/home/kartmann/share_folder/dataset')
 parser.add_argument("-s", "--sequence", type=str, default='00')
-parser.add_argument("-r", "--rate", default=0.5, type=float)
+parser.add_argument("-r", "--rate", default=1, type=float)
+parser.add_argument("--start", default=0, type=int)
 args = parser.parse_args()
 args_dict = vars(args)
 print('Argument list to program')
@@ -197,6 +198,7 @@ class CloudPublishNode:
         c_tr, c_quat = mat2trq(c_est_mat)
         cap_msg = CloudAndPose()
         cap_msg.seq = idx
+
         cap_msg.point_cloud2 = point_cloud2.create_cloud(self.header, self.fields, [point for point in current_cloud])
         cap_msg.init_guess = self.tq2tf_msg(*mat2trq(delta_gt_pose), self.header, "est")
 
@@ -218,7 +220,7 @@ class CloudPublishNode:
         self.rate.sleep()
 
     def __call__(self):
-        for idx in range(len(self.dataset.poses)):
+        for idx in range(args.start, len(self.dataset.poses)):
             if rospy.is_shutdown():
                 break
             self.serve(idx)
